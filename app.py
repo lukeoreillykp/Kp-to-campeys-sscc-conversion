@@ -107,7 +107,7 @@ if st.button("Process & Generate Files", type="primary"):
                     FINAL_COLUMN_ORDER = ["Load Ref", "Date", "SSCC Code", "Item Code", "Description", "Units", "Rotation Date", "Batch", "Movement", "Status", "Positive Release", "Catch Weight To Remove"]
                     output_df = df_filtered[FINAL_COLUMN_ORDER]
                     
-                    st.success(f"🎉 WMS Data successfully processed! (Safely removed {total_dropped} invalid summary rows or 'na' lines)")
+                    st.success(f"🎉 WMS Data successfully converted! (Dropped {total_dropped} invalid summary rows or 'na' lines)")
                     st.dataframe(output_df, use_container_width=True)
                     
                     # Create clean file properties based on your Load Ref input
