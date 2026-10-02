@@ -46,6 +46,10 @@ FINAL_COLUMN_ORDER = [
 ]
 
 
+# =========================================================
+# GITHUB SETTINGS
+# =========================================================
+
 def get_github_settings():
     token = st.secrets.get("github_token")
     username = st.secrets.get("github_username")
@@ -73,6 +77,10 @@ def get_github_settings():
     )
 
 
+# =========================================================
+# CLEAN FILENAME
+# =========================================================
+
 def clean_filename(filename):
     filename = str(filename).strip()
 
@@ -96,6 +104,10 @@ def clean_filename(filename):
 
     return filename
 
+
+# =========================================================
+# SUMMARY ROW CHECK
+# =========================================================
 
 def is_summary_row(value):
     if pd.isna(value):
@@ -121,6 +133,10 @@ def is_summary_row(value):
     return False
 
 
+# =========================================================
+# EXPLICIT NA CHECK
+# =========================================================
+
 def is_explicit_na(value):
     if pd.isna(value):
         return False
@@ -135,6 +151,10 @@ def is_explicit_na(value):
 
     return cleaned == "na"
 
+
+# =========================================================
+# READ WMS DATA
+# =========================================================
 
 def read_wms_data(text):
     if not text or not text.strip():
@@ -165,7 +185,16 @@ def read_wms_data(text):
     return df
 
 
+# =========================================================
+# UPLOAD TO GITHUB
+# =========================================================
+
 def upload_to_github(csv_bytes, filename):
+
+    # -----------------------------------------------------
+    # Get GitHub settings
+    # -----------------------------------------------------
+
     try:
         (
             token,
@@ -180,6 +209,23 @@ def upload_to_github(csv_bytes, filename):
         )
         return False
 
+    # -----------------------------------------------------
+    # Clean GitHub settings
+    # -----------------------------------------------------
+
+    username = username.strip().strip("/")
+    repo = repo.strip().strip("/")
+    filename = filename.strip().lstrip("/")
+
+    # -----------------------------------------------------
+    # GitHub file path
+    # -----------------------------------------------------
+
+    file_path = (
+        "saved_loads/"
+        + filename
+    )
+
     encoded_username = urllib.parse.quote(
         username,
         safe="",
@@ -190,9 +236,9 @@ def upload_to_github(csv_bytes, filename):
         safe="",
     )
 
-    encoded_filename = urllib.parse.quote(
-        filename,
-        safe="",
+    encoded_file_path = urllib.parse.quote(
+        file_path,
+        safe="/",
     )
 
     url = (
@@ -200,9 +246,13 @@ def upload_to_github(csv_bytes, filename):
         + encoded_username
         + "/"
         + encoded_repo
-        + "/contents/saved_loads/"
-        + encoded_filename
+        + "/contents/"
+        + encoded_file_path
     )
+
+    # -----------------------------------------------------
+    # GitHub headers
+    # -----------------------------------------------------
 
     headers = {
         "Authorization": "Bearer " + token,
@@ -213,6 +263,10 @@ def upload_to_github(csv_bytes, filename):
     encoded_file = base64.b64encode(
         csv_bytes
     ).decode("utf-8")
+
+    # -----------------------------------------------------
+    # Check whether file already exists
+    # -----------------------------------------------------
 
     try:
         check = requests.get(
@@ -228,15 +282,12 @@ def upload_to_github(csv_bytes, filename):
         )
         return False
 
-    payload = {
-        "message": (
-            "Archive automated reformat entry: "
-            + filename
-        ),
-        "content": encoded_file,
-    }
+    # =====================================================
+    # FILE ALREADY EXISTS
+    # =====================================================
 
     if check.status_code == 200:
+
         try:
             existing = check.json()
 
@@ -251,17 +302,115 @@ def upload_to_github(csv_bytes, filename):
 
         if not sha:
             st.error(
-                "❌ GitHub found the file but did not "
-                "return its SHA."
+                "❌ GitHub found the existing file but "
+                "did not return its SHA."
             )
             return False
 
-        payload["sha"] = sha
+        payload = {
+            "message": (
+                "Archive automated reformat entry: "
+                + filename
+            ),
+            "content": encoded_file,
+            "sha": sha,
+        }
+
+    # =====================================================
+    # FILE DOES NOT EXIST
+    # =====================================================
 
     elif check.status_code == 404:
-        pass
+
+        # A 404 can mean either:
+        #
+        # 1. The file does not exist yet.
+        #    This is OK.
+        #
+        # 2. The repository cannot be found.
+        #    This needs fixing.
+        #
+        # We therefore check the repository itself.
+
+        repository_url = (
+            "https://api.github.com/repos/"
+            + encoded_username
+            + "/"
+            + encoded_repo
+        )
+
+        try:
+            repository_check = requests.get(
+                repository_url,
+                headers=headers,
+                timeout=20,
+            )
+
+        except requests.RequestException as error:
+            st.error(
+                "❌ Could not verify the GitHub repository.\n\n"
+                + str(error)
+            )
+            return False
+
+        # -------------------------------------------------
+        # Repository could not be found
+        # -------------------------------------------------
+
+        if repository_check.status_code != 200:
+
+            try:
+                repository_error = (
+                    repository_check.json()
+                )
+
+            except ValueError:
+                repository_error = (
+                    repository_check.text
+                )
+
+            st.error(
+                "❌ GitHub repository could not be found.\n\n"
+                + "Repository: "
+                + username
+                + "/"
+                + repo
+                + "\n\n"
+                + "HTTP status: "
+                + str(
+                    repository_check.status_code
+                )
+                + "\n\nGitHub response:\n"
+                + str(repository_error)
+            )
+
+            st.info(
+                "Check your Streamlit Secrets. "
+                "github_username must be the GitHub account "
+                "or organisation that owns the repository, "
+                "and github_repo must be the repository name."
+            )
+
+            return False
+
+        # -------------------------------------------------
+        # Repository exists, so create the file
+        # -------------------------------------------------
+
+        payload = {
+            "message": (
+                "Archive automated reformat entry: "
+                + filename
+            ),
+            "content": encoded_file,
+        }
+
+    # =====================================================
+    # OTHER GITHUB ERROR
+    # =====================================================
 
     else:
+
         try:
             error_details = check.json()
 
@@ -270,6 +419,14 @@ def upload_to_github(csv_bytes, filename):
 
         st.error(
             "❌ GitHub rejected the archive check.\n\n"
+            + "Repository: "
+            + username
+            + "/"
+            + repo
+            + "\n\n"
+            + "Path: "
+            + file_path
+            + "\n\n"
             + "HTTP status: "
             + str(check.status_code)
             + "\n\nGitHub response:\n"
@@ -277,6 +434,10 @@ def upload_to_github(csv_bytes, filename):
         )
 
         return False
+
+    # =====================================================
+    # UPLOAD / UPDATE FILE
+    # =====================================================
 
     try:
         response = requests.put(
@@ -294,13 +455,23 @@ def upload_to_github(csv_bytes, filename):
         )
         return False
 
+    # =====================================================
+    # SUCCESS
+    # =====================================================
+
     if response.status_code in (200, 201):
+
         st.success(
             "📂 Cloud Archive: "
             + filename
             + " successfully saved to GitHub."
         )
+
         return True
+
+    # =====================================================
+    # UPLOAD ERROR
+    # =====================================================
 
     try:
         error_details = response.json()
@@ -310,6 +481,14 @@ def upload_to_github(csv_bytes, filename):
 
     st.error(
         "❌ GitHub rejected the archive upload.\n\n"
+        + "Repository: "
+        + username
+        + "/"
+        + repo
+        + "\n\n"
+        + "Path: "
+        + file_path
+        + "\n\n"
         + "HTTP status: "
         + str(response.status_code)
         + "\n\nGitHub response:\n"
@@ -319,9 +498,9 @@ def upload_to_github(csv_bytes, filename):
     return False
 
 
-# ---------------------------------------------------------
+# =========================================================
 # 1. ADDITIONAL INFORMATION
-# ---------------------------------------------------------
+# =========================================================
 
 st.subheader("1. Additional Information")
 
@@ -340,9 +519,9 @@ with col2:
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # 2. WMS DATA INPUT
-# ---------------------------------------------------------
+# =========================================================
 
 st.subheader("2. Paste WMS Data Below")
 
@@ -367,11 +546,15 @@ process_button = st.button(
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # 3. PROCESS DATA
-# ---------------------------------------------------------
+# =========================================================
 
 if process_button:
+
+    # -----------------------------------------------------
+    # Validate Load Ref
+    # -----------------------------------------------------
 
     if not load_ref.strip():
         st.error(
@@ -379,17 +562,29 @@ if process_button:
         )
         st.stop()
 
+    # -----------------------------------------------------
+    # Validate JDE Order Ref
+    # -----------------------------------------------------
+
     if not jde_order_ref.strip():
         st.error(
             "Please enter a JDE Order Ref."
         )
         st.stop()
 
+    # -----------------------------------------------------
+    # Validate WMS data
+    # -----------------------------------------------------
+
     if not pasted_text.strip():
         st.error(
             "Please paste the WMS data."
         )
         st.stop()
+
+    # -----------------------------------------------------
+    # Read WMS data
+    # -----------------------------------------------------
 
     try:
         df = read_wms_data(
@@ -404,7 +599,7 @@ if process_button:
         st.stop()
 
     # -----------------------------------------------------
-    # Check required WMS columns
+    # Check required columns
     # -----------------------------------------------------
 
     missing_columns = [
@@ -424,7 +619,7 @@ if process_button:
         st.stop()
 
     # -----------------------------------------------------
-    # Remove completely blank rows
+    # Remove blank rows
     # -----------------------------------------------------
 
     df = df.replace(
@@ -458,7 +653,7 @@ if process_button:
     ].copy()
 
     # -----------------------------------------------------
-    # Remove rows containing explicit NA values
+    # Remove explicit NA rows
     # -----------------------------------------------------
 
     na_mask = df.apply(
@@ -478,7 +673,7 @@ if process_button:
     ].copy()
 
     # -----------------------------------------------------
-    # Check that valid rows remain
+    # Check valid rows
     # -----------------------------------------------------
 
     if df.empty:
@@ -488,7 +683,7 @@ if process_button:
         st.stop()
 
     # -----------------------------------------------------
-    # Add Load Ref, Date and Movement
+    # UK date/time
     # -----------------------------------------------------
 
     timezone = pytz.timezone(
@@ -501,12 +696,16 @@ if process_button:
         "%d/%m/%Y %H:%M"
     )
 
+    # -----------------------------------------------------
+    # Add output fields
+    # -----------------------------------------------------
+
     df["Load Ref"] = load_ref.strip()
     df["Date"] = current_time
     df["Movement"] = jde_order_ref.strip()
 
     # -----------------------------------------------------
-    # Check output columns
+    # Check final columns
     # -----------------------------------------------------
 
     missing_output = [
@@ -526,7 +725,7 @@ if process_button:
         st.stop()
 
     # -----------------------------------------------------
-    # Create final output dataframe
+    # Create final output
     # -----------------------------------------------------
 
     output_df = df[
@@ -534,7 +733,7 @@ if process_button:
     ].copy()
 
     # -----------------------------------------------------
-    # Calculate SKU counts
+    # SKU counts
     # -----------------------------------------------------
 
     sku_counts = (
@@ -552,7 +751,7 @@ if process_button:
     )
 
     # -----------------------------------------------------
-    # Success message
+    # Success
     # -----------------------------------------------------
 
     st.success(
@@ -594,7 +793,7 @@ if process_button:
     )
 
     # -----------------------------------------------------
-    # Upload archive to GitHub
+    # Upload to GitHub
     # -----------------------------------------------------
 
     upload_to_github(
@@ -602,9 +801,9 @@ if process_button:
         filename,
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # 4. EXPORT PROCESSED DATA
-    # -----------------------------------------------------
+    # =====================================================
 
     st.subheader(
         "3. Export Processed Data"
@@ -613,10 +812,11 @@ if process_button:
     button1, button2, button3 = st.columns(3)
 
     # -----------------------------------------------------
-    # Button 1 - Download CSV
+    # Download CSV
     # -----------------------------------------------------
 
     with button1:
+
         st.download_button(
             label="📥 1. Download CSV Locally",
             data=csv_bytes,
@@ -627,7 +827,7 @@ if process_button:
         )
 
     # -----------------------------------------------------
-    # Button 2 - Pre-filled Email
+    # Pre-filled email
     # -----------------------------------------------------
 
     with button2:
@@ -644,6 +844,7 @@ if process_button:
         summary_lines = []
 
         for sku, count in sku_counts.items():
+
             summary_lines.append(
                 "• SKU: "
                 + str(sku)
@@ -664,92 +865,4 @@ if process_button:
             + sku_summary
             + "\n\n"
             "Regards,\n"
-            "WMS Automated Conversion Engine"
-        )
-
-        mailto_url = (
-            "mailto:"
-            + email_recipient
-            + "?subject="
-            + urllib.parse.quote(
-                email_subject
-            )
-            + "&body="
-            + urllib.parse.quote(
-                email_body
-            )
-        )
-
-        st.link_button(
-            "📧 2. Open Pre-Filled Email",
-            url=mailto_url,
-            use_container_width=True,
-        )
-
-    # -----------------------------------------------------
-    # Button 3 - GitHub Archive
-    # -----------------------------------------------------
-
-    with button3:
-        try:
-            (
-                _token,
-                github_username,
-                github_repo,
-            ) = get_github_settings()
-
-            repository_url = (
-                "https://github.com/"
-                + github_username
-                + "/"
-                + github_repo
-                + "/tree/main/saved_loads"
-            )
-
-            st.link_button(
-                "📋 3. Access Repository Archive",
-                url=repository_url,
-                use_container_width=True,
-            )
-
-        except Exception:
-            st.info(
-                "GitHub repository link unavailable."
-            )
-
-    # -----------------------------------------------------
-    # 5. SKU SUMMARY
-    # -----------------------------------------------------
-
-    st.write("---")
-
-    st.subheader(
-        "📊 "
-        + str(load_ref)
-        + " Pallet Count by SKU"
-    )
-
-    if not sku_counts.empty:
-
-        summary_df = (
-            sku_counts
-            .rename("Pallet Count")
-            .reset_index()
-        )
-
-        summary_df.columns = [
-            "SKU",
-            "Pallet Count",
-        ]
-
-        st.dataframe(
-            summary_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    else:
-        st.info(
-            "No SKU counts were available."
-        )
-
+            "WMS Automated
