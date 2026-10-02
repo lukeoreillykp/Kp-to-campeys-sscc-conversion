@@ -71,25 +71,41 @@ if st.button("Process & Email CSV", type="primary"):
                 # Drop rows that are completely empty across every cell
                 df_clean = df_raw.dropna(how='all').copy()
                 
-                # --- AGGRESSIVE FILTERING FOR ANY 'NA' VARIATION ---
+                # --- PROTECTION 1: DROP INVALID WMS SUMMARY ROWS ---
+                # If the SSCC Code is missing, contains 'total', or is just an N/A variant, discard the row immediately
+                def is_invalid_summary_row(row):
+                    sscc_val = str(row.get("SSCC Code", "")).strip().lower()
+                    if not sscc_val or pd.isna(row.get("SSCC Code")):
+                        return True
+                    if "total" in sscc_val or sscc_val in ["na", "n/a", "n / a"]:
+                        return True
+                    return False
+
+                summary_rows_mask = df_clean.apply(is_invalid_summary_row, axis=1)
+                df_clean = df_clean[~summary_rows_mask]
+                
+                # --- PROTECTION 2: AGGRESSIVE FILTERING FOR ANY 'NA' VARIATION ---
                 def contains_explicit_na(val):
                     if pd.isna(val):
-                        return False  # Leave natural empty/blank cells alone as requested
+                        return False  # Leave natural empty/blank cells alone
                     
-                    # Convert cell value to a clean string: remove spaces, hashes, and slashes, then make lowercase
-                    clean_str = re.sub(r'[\s#\/\\\-_]', '', str(val)).lower()
+                    # Convert to a clean lowercase string with stripped punctuation
+                    clean_str = re.sub(r'[\s#\/\\\-_.]', '', str(val)).lower()
                     
-                    # Triggers true if the text matches exactly 'na' (catches na, n/a, #n/a, n/a , etc.)
-                    return clean_str == 'na'
+                    # Triggers true if 'na' exists anywhere as an independent text segment
+                    return "na" in clean_str
 
-                # Create a true/false mask identifying rows with explicit 'na' labels
+                # Identify rows containing written 'na' labels
                 row_has_explicit_na = df_clean.map(contains_explicit_na).any(axis=1)
                 
-                # Deletes the whole row if any cell contains an explicit 'na' variation
+                # Deletes the whole row if any cell contains an explicit 'na' text fragment
                 df_filtered = df_clean[~row_has_explicit_na].copy()
                 
+                # Total dropped tracking count
+                total_dropped = summary_rows_mask.sum() + row_has_explicit_na.sum()
+                
                 if df_filtered.empty:
-                    st.error("Filtering complete: All pasted rows contained explicit 'na' values or were entirely empty. Nothing to send.")
+                    st.error("Filtering complete: All pasted rows contained explicit 'na' values, summary blocks, or were entirely empty. Nothing to send.")
                 else:
                     # Get current date and time in UK/London time zone
                     local_tz = pytz.timezone("Europe/London")
@@ -120,7 +136,7 @@ if st.button("Process & Email CSV", type="primary"):
                     
                     output_df = df_filtered[FINAL_COLUMN_ORDER]
                     
-                    st.success(f"🎉 Data successfully processed! (Deleted {row_has_explicit_na.sum()} rows explicitly containing 'na' or 'n/a')")
+                    st.success(f"🎉 Data successfully processed! (Safely removed {total_dropped} invalid summary rows or 'na' lines)")
                     st.dataframe(output_df, use_container_width=True)
                     
                     # Create a clean, safe filename from the Load Ref field
