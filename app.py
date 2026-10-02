@@ -32,7 +32,7 @@ st.caption("Include your header row! Copy the entire grid from your WMS (Ctrl+A 
 
 pasted_text = st.text_area("Paste data here:", height=250, placeholder="SSCC Code\tItem Code\tDescription\tUnits...")
 
-# Removed "Movement" — now expecting exactly 9 WMS columns from your grid
+# Expected 9 WMS columns from your grid
 EXPECTED_WMS_COLUMNS = [
     "SSCC Code", 
     "Item Code", 
@@ -53,13 +53,13 @@ if st.button("Process & Email CSV", type="primary"):
         st.warning("Please fill out the Load Ref, JDE Order Ref, and the recipient email.")
     else:
         try:
-            # Detect whether data is tab-separated (from spreadsheet grids) or comma-separated
+            # Detect whether data is tab-separated or comma-separated
             separator = '\t' if '\t' in pasted_text else ','
             
             # Read the pasted text dynamically into a DataFrame
             df_raw = pd.read_csv(io.StringIO(pasted_text.strip()), sep=separator)
             
-            # Clean up column names from any accidental trailing whitespace or hidden characters
+            # Clean up column names from any accidental trailing whitespace
             df_raw.columns = df_raw.columns.str.strip()
             
             # Verify all 9 required columns are present in the pasted text
@@ -71,10 +71,18 @@ if st.button("Process & Email CSV", type="primary"):
                 # Drop completely blank rows
                 df_clean = df_raw.dropna(how='all').copy()
                 
-                # --- IGNORE ANY CELL SAYING 'NA' ---
-                na_mask = df_clean.astype(str).map(lambda x: x.strip().lower() in ['n/a', 'na'])
-                nan_mask = df_clean.isna()
-                row_has_na = (na_mask | nan_mask).any(axis=1)
+                # --- SAFE FILTERING FOR 'NA' values (Handles text and numbers safely) ---
+                # First convert everything to strings safely, handle missing data, and lowercase it
+                def check_for_na(val):
+                    if pd.isna(val):
+                        return True
+                    val_str = str(val).strip().lower()
+                    return val_str in ['n/a', 'na']
+
+                # Create a true/false mask for rows containing NA elements
+                row_has_na = df_clean.map(check_for_na).any(axis=1)
+                
+                # Filter out rows matching the criteria
                 df_filtered = df_clean[~row_has_na].copy()
                 
                 if df_filtered.empty:
@@ -82,28 +90,26 @@ if st.button("Process & Email CSV", type="primary"):
                 else:
                     # Get current date and time in UK/London time zone
                     local_tz = pytz.timezone("Europe/London")
-                    # Formatted to your exact preference: DD/mm/yyyy hh:mm
                     current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
                     
                     # Inject metadata headers
                     df_filtered["Load Ref"] = extra_info_1
                     df_filtered["Date"] = current_time
                     
-                    # Create the Movement column entirely out of the JDE Order Ref input text
+                    # Create the Movement column out of the JDE Order Ref input text
                     df_filtered["Movement"] = jde_order_ref
                     
                     # --- FINAL OUTPUT LAYOUT SPECIFICATION ---
-                    # Forces the final CSV into your exact target structural layout
                     FINAL_COLUMN_ORDER = [
-                        "Load Ref",            # 1st Column
-                        "Date",                # 2nd Column
+                        "Load Ref",            
+                        "Date",                
                         "SSCC Code",
                         "Item Code",
                         "Description",
                         "Units",
                         "Rotation Date",
                         "Batch",
-                        "Movement",            # Generated fresh from JDE Order Ref input
+                        "Movement",            
                         "Status",
                         "Positive Release",
                         "Catch Weight To Remove"
