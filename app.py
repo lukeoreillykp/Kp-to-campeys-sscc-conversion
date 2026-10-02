@@ -1392,5 +1392,3 @@ else:
 
     st.session_state.page = "home"
     st.rerun()
-
-This version specifically replaces the failing "df.applymap(...)" with "df.map(...)".
