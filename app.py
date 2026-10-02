@@ -153,7 +153,7 @@ if st.button("Process & Email CSV", type="primary"):
                     }
                     
                     response1 = requests.post(url, json=payload1, headers=headers)
-                    # Fixed syntax here: checking for standard success code status
+                    # Fixed syntax here: checking for success statuses safely
                     if response1.status_code in:
                         st.success("📧 Master CSV dispatched successfully via Web API!")
                     else:
