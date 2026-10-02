@@ -865,4 +865,95 @@ if process_button:
             + sku_summary
             + "\n\n"
             "Regards,\n"
-            "WMS Automated
+            "WMS Automated Conversion Engine"
+        )
+
+        mailto_url = (
+            "mailto:"
+            + email_recipient
+            + "?subject="
+            + urllib.parse.quote(
+                email_subject
+            )
+            + "&body="
+            + urllib.parse.quote(
+                email_body
+            )
+        )
+
+        st.link_button(
+            "📧 2. Open Pre-Filled Email",
+            url=mailto_url,
+            use_container_width=True,
+        )
+
+    # -----------------------------------------------------
+    # GitHub archive link
+    # -----------------------------------------------------
+
+    with button3:
+
+        try:
+
+            (
+                _token,
+                github_username,
+                github_repo,
+            ) = get_github_settings()
+
+            repository_url = (
+                "https://github.com/"
+                + github_username
+                + "/"
+                + github_repo
+                + "/tree/main/saved_loads"
+            )
+
+            st.link_button(
+                "📋 3. Access Repository Archive",
+                url=repository_url,
+                use_container_width=True,
+            )
+
+        except Exception:
+
+            st.info(
+                "GitHub repository link unavailable."
+            )
+
+    # =====================================================
+    # 5. SKU SUMMARY
+    # =====================================================
+
+    st.write("---")
+
+    st.subheader(
+        "📊 "
+        + str(load_ref)
+        + " Pallet Count by SKU"
+    )
+
+    if not sku_counts.empty:
+
+        summary_df = (
+            sku_counts
+            .rename("Pallet Count")
+            .reset_index()
+        )
+
+        summary_df.columns = [
+            "SKU",
+            "Pallet Count",
+        ]
+
+        st.dataframe(
+            summary_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    else:
+
+        st.info(
+            "No SKU counts were available."
+        )
