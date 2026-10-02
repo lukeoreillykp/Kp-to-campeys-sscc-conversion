@@ -1,14 +1,11 @@
 import streamlit as st
 import pandas as pd
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 import re
 from datetime import datetime
 import pytz
 import io
+import requests
+import base64
 
 # Form Title Configuration
 st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
@@ -122,42 +119,52 @@ if st.button("Process & Email CSV", type="primary"):
             csv_filename = f"{safe_filename}.csv" if safe_filename else "wms_output.csv"
             csv_data = output_df.to_csv(index=False)
             
-            # Fetch background secrets tokens
-            SMTP_SERVER = st.secrets["smtp"]["server"]
-            SMTP_PORT = int(st.secrets["smtp"]["port"])
-            SENDER_EMAIL = st.secrets["smtp"]["sender"]
-            SENDER_PASSWORD = st.secrets["smtp"]["password"]
+            # Convert CSV data to base64 encoding for API transport
+            b64_csv = base64.b64encode(csv_data.encode('utf-8')).decode('utf-8')
             
-            # Open standard secure connection
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-                server.starttls()
-                server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            # Fetch API Key from Secrets Dashboard
+            API_KEY = st.secrets["brevo_api_key"]
+            url = "https://brevo.com"
+            
+            headers = {
+                "accept": "application/json",
+                "content-type": "application/json",
+                "api-key": API_KEY
+            }
+            
+            # --- WEB DISPATCH 1: MASTER DATA CSV ---
+            payload1 = {
+                "sender": {"email": "kp.ponte.csv@gmail.com", "name": "WMS Reformat Engine"},
+                "to": [{"email": recipient_email}],
+                "subject": f"Campeys SSCC Report - {extra_info_1}",
+                "textContent": f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.",
+                "attachments": [{
+                    "content": b64_csv,
+                    "name": csv_filename
+                }]
+            }
+            
+            response1 = requests.post(url, json=payload1, headers=headers)
+            if response1.status_code in:
+                st.success("📧 Master CSV dispatched successfully via Web API!")
+            else:
+                st.error(f"Failed sending CSV email. API Error: {response1.text}")
                 
-                # Email 1: Master CSV Document
-                msg1 = MIMEMultipart()
-                msg1['From'] = SENDER_EMAIL
-                msg1['To'] = recipient_email
-                msg1['Subject'] = f"Campeys SSCC Report - {extra_info_1}"
-                msg1.attach(MIMEText(f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.", 'plain'))
-                
-                part = MIMEBase('application', 'octet-stream')
-                part.set_payload(csv_data.encode('utf-8'))
-                encoders.encode_base64(part)
-                part.add_header('Content-Disposition', f"attachment; filename={csv_filename}")
-                msg1.attach(part)
-                server.sendmail(SENDER_EMAIL, recipient_email, msg1.as_string())
-                st.success("📧 Master CSV dispatched successfully!")
-                
-                # Email 2: Inline HTML Metric Table
-                msg2 = MIMEMultipart()
-                msg2['From'] = SENDER_EMAIL
-                msg2['To'] = "Luke.oreilly@kpsnacks.com"
-                msg2['Subject'] = f"{extra_info_1} Pallet Count by SKU"
-                
-                email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
-                msg2.attach(MIMEText(email_body, 'html'))
-                server.sendmail(SENDER_EMAIL, "Luke.oreilly@kpsnacks.com", msg2.as_string())
-                st.success("📊 Summary matrix tables delivered directly to Luke!")
+            # --- WEB DISPATCH 2: SKU PALLET BREAKDOWN TABLE ---
+            email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
+            
+            payload2 = {
+                "sender": {"email": "kp.ponte.csv@gmail.com", "name": "WMS Reformat Engine"},
+                "to": [{"email": "Luke.oreilly@kpsnacks.com"}],
+                "subject": f"{extra_info_1} Pallet Count by SKU",
+                "htmlContent": email_body
+            }
+            
+            response2 = requests.post(url, json=payload2, headers=headers)
+            if response2.status_code in:
+                st.success("📊 Summary matrix tables delivered directly to Luke via Web API!")
+            else:
+                st.error(f"Failed sending Summary email. API Error: {response2.text}")
                 
         except Exception as e:
-            st.error(f"An execution issue occurred with the email system: {e}")
+            st.error(f"An error occurred during API delivery: {e}")
