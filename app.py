@@ -134,10 +134,12 @@ if st.button("Process & Email CSV", type="primary"):
                     API_KEY = st.secrets["brevo_api_key"]
                     url = "https://brevo.com"
                     
+                    # Updated headers containing custom user-agent masking parameters
                     headers = {
                         "accept": "application/json",
                         "content-type": "application/json",
-                        "api-key": API_KEY
+                        "api-key": API_KEY,
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                     }
                     
                     # --- WEB DISPATCH 1: MASTER DATA CSV ---
@@ -156,7 +158,7 @@ if st.button("Process & Email CSV", type="primary"):
                     if response1.status_code == 201 or response1.status_code == 200:
                         st.success("📧 Master CSV dispatched successfully via Web API!")
                     else:
-                        st.error(f"Failed sending CSV email. API Error: {response1.text}")
+                        st.error(f"Failed sending CSV email. API Error: {response1.status_code} - Details: {response1.text}")
                         
                     # --- WEB DISPATCH 2: SKU PALLET BREAKDOWN TABLE ---
                     email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
@@ -172,7 +174,7 @@ if st.button("Process & Email CSV", type="primary"):
                     if response2.status_code == 201 or response2.status_code == 200:
                         st.success("📊 Summary matrix tables delivered directly to Luke via Web API!")
                     else:
-                        st.error(f"Failed sending Summary email. API Error: {response2.text}")
+                        st.error(f"Failed sending Summary email. API Error: {response2.status_code} - Details: {response2.text}")
                         
         except Exception as e:
             st.error(f"An error occurred during API delivery: {e}")
