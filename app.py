@@ -5,6 +5,8 @@ from datetime import datetime
 import pytz
 import io
 import urllib.parse
+import requests
+import base64
 
 # Form Title Configuration
 st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
@@ -94,8 +96,6 @@ if st.button("Process & Generate Files", type="primary"):
                     
                     # --- CALCULATE UNIQUE SKU COUNTS FOR SUMMARY PALLETS ---
                     sku_counts = df_filtered["Item Code"].astype(str).str.strip().value_counts()
-                    
-                    # Create a clean text summary breakdown for the email body text
                     text_summary = "\n".join([f"• SKU: {sku} -> Count: {count}" for sku, count in sku_counts.items()])
                     
                     # Inject metadata headers into main data sheet
@@ -112,18 +112,52 @@ if st.button("Process & Generate Files", type="primary"):
                     # Create clean file properties based on your Load Ref input
                     safe_filename = re.sub(r'[\\/*?:"<>|]', "", extra_info_1).strip()
                     csv_filename = f"{safe_filename}.csv" if safe_filename else "wms_output.csv"
-                    csv_bytes = output_df.to_csv(index=False).encode('utf-8')
+                    csv_data = output_df.to_csv(index=False)
+                    csv_bytes = csv_data.encode('utf-8')
+                    
+                    # --- AUTOMATED GITHUB REPOSITORY UPLOAD LAYER ---
+                    try:
+                        TOKEN = st.secrets["github_token"]
+                        USERNAME = st.secrets["github_username"]
+                        REPO = st.secrets["github_repo"]
+                        
+                        # GitHub API Endpoint to save files inside a folder named 'saved_loads'
+                        github_url = f"https://github.com{USERNAME}/{REPO}/contents/saved_loads/{csv_filename}"
+                        
+                        headers = {
+                            "Authorization": f"token {TOKEN}",
+                            "Accept": "application/vnd.github.v3+json"
+                        }
+                        
+                        # Encode CSV payload to base64 for API transmission
+                        b64_content = base64.b64encode(csv_bytes).decode('utf-8')
+                        
+                        # Check if file already exists to handle updates, otherwise create fresh entry
+                        res_check = requests.get(github_url, headers=headers)
+                        payload = {
+                            "message": f"Archive automated reformat entry: {csv_filename}",
+                            "content": b64_content
+                        }
+                        if res_check.status_code == 200:
+                            payload["sha"] = res_check.json()["sha"]
+                            
+                        upload_res = requests.put(github_url, json=payload, headers=headers)
+                        if upload_res.status_code == 201 or upload_res.status_code == 200:
+                            st.info(f"📂 Cloud Archive: '{csv_filename}' successfully saved directly to your GitHub repository.")
+                        else:
+                            st.warning(f"⚠️ App processed data but failed archiving to GitHub repository. Info: {upload_res.text}")
+                    except Exception as g_err:
+                        st.warning(f"⚠️ GitHub integration config check skipped or failed: {g_err}")
                     
                     # --- WEB ACTION DASHBOARD ---
                     st.subheader("3. Export Processed Data")
                     
-                    # Create two side-by-side action points for the operator
-                    btn_col1, btn_col2 = st.columns(2)
+                    btn_col1, btn_col2, btn_col3 = st.columns(3)
                     
                     with btn_col1:
                         # Master file browser download button
                         st.download_button(
-                            label=f"📥 1. Download CSV File",
+                            label="📥 1. Download CSV Locally",
                             data=csv_bytes,
                             file_name=csv_filename,
                             mime="text/csv",
@@ -132,16 +166,17 @@ if st.button("Process & Generate Files", type="primary"):
                         )
                     
                     with btn_col2:
-                        # Construct a safe browser link to launch your mail application natively
+                        # Construct safe mailto browser trigger
                         email_recipient = "Luke.oreilly@kpsnacks.com"
                         email_subject = f"{extra_info_1} Pallet Count by SKU"
                         email_body = f"Hi Luke,\n\nHere is the pallet count breakdown summarized by unique SKU for Load Ref: {extra_info_1}\n\n{text_summary}\n\nRegards,\nWMS Automated Conversion Engine"
-                        
-                        # Encode characters to safely pass through standard URL schemes
                         mailto_link = f"mailto:{email_recipient}?subject={urllib.parse.quote(email_subject)}&body={urllib.parse.quote(email_body)}"
-                        
-                        # Render a clean button that safely triggers your mail client
                         st.link_button("📧 2. Open Pre-Filled Email", url=mailto_link, use_container_width=True)
+                        
+                    with btn_col3:
+                        # Dynamic button that routes directly to your online repository's saved folder layout
+                        repo_view_url = f"https://github.com{st.secrets['github_username']}/{st.secrets['github_repo']}/tree/main/saved_loads"
+                        st.link_button("📋 3. Access Repository Archive", url=repo_view_url, use_container_width=True)
                     
                     # Display Luke's Pallet Summary Metrics Grid right on the page
                     st.write("---")
@@ -154,4 +189,3 @@ if st.button("Process & Generate Files", type="primary"):
                     st.dataframe(output_df, use_container_width=True)
                         
         except Exception as e:
-            st.error(f"An error occurred during file building: {e}")
