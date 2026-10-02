@@ -1,3 +1,6 @@
+Absolutely. I’ve added a new Import Historic CSVs tool to the dashboard and built the importer into the full app.
+The importer supports multiple CSVs at once, previews what will be imported, calculates SKU counts from each file's Item Code, checks for duplicate Load Ref + Date combinations, and then updates sku_counts_history.csv in GitHub.
+Writing
 import base64
 import io
 import re
@@ -407,6 +410,7 @@ def upload_to_github(
 def update_sku_history(
     load_ref,
     sku_counts,
+    submitted_date=None,
 ):
     """Add current load to SKU history."""
 
@@ -506,13 +510,22 @@ def update_sku_history(
         "Europe/London"
     )
 
-    new_row = {
-        "Date Submitted": datetime.now(
+    if submitted_date:
+
+        date_value = str(
+            submitted_date
+        ).strip()
+
+    else:
+
+        date_value = datetime.now(
             london
         ).strftime(
             "%d/%m/%Y %H:%M"
-        ),
+        )
 
+    new_row = {
+        "Date Submitted": date_value,
         "Load Ref": load_ref,
     }
 
@@ -556,6 +569,491 @@ def update_sku_history(
     )
 
     return history_df
+
+
+# ============================================================
+# HISTORIC CSV IMPORT
+# ============================================================
+
+def extract_historic_csv_data(
+    uploaded_file
+):
+    """
+    Read a historic SSCC CSV and extract:
+    - Load Ref
+    - Date
+    - SKU counts
+    """
+
+    try:
+
+        file_bytes = uploaded_file.getvalue()
+
+        try:
+
+            df = pd.read_csv(
+                io.BytesIO(file_bytes),
+                dtype=str,
+            )
+
+        except Exception:
+
+            df = pd.read_csv(
+                io.BytesIO(file_bytes),
+                dtype=str,
+                encoding="latin-1",
+            )
+
+    except Exception as exc:
+
+        raise ValueError(
+            f"Unable to read {uploaded_file.name}: {exc}"
+        )
+
+    df.columns = [
+        str(column).strip()
+        for column in df.columns
+    ]
+
+    # --------------------------------------------------------
+    # Check required fields
+    # --------------------------------------------------------
+
+    if "Item Code" not in df.columns:
+
+        raise ValueError(
+            f"{uploaded_file.name} does not contain "
+            "an 'Item Code' column."
+        )
+
+    if "Load Ref" not in df.columns:
+
+        raise ValueError(
+            f"{uploaded_file.name} does not contain "
+            "a 'Load Ref' column."
+        )
+
+    # --------------------------------------------------------
+    # Get Load Ref
+    # --------------------------------------------------------
+
+    load_refs = (
+        df["Load Ref"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    load_refs = [
+        value
+        for value in load_refs
+        if value
+        and value.lower()
+        not in [
+            "nan",
+            "none",
+        ]
+    ]
+
+    if not load_refs:
+
+        raise ValueError(
+            f"{uploaded_file.name} does not contain "
+            "a valid Load Ref."
+        )
+
+    load_ref = load_refs[0]
+
+    # --------------------------------------------------------
+    # Get submitted date
+    # --------------------------------------------------------
+
+    submitted_date = None
+
+    if "Date" in df.columns:
+
+        date_values = (
+            df["Date"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+
+        date_values = [
+            value
+            for value in date_values
+            if value
+            and value.lower()
+            not in [
+                "nan",
+                "none",
+            ]
+        ]
+
+        if date_values:
+
+            submitted_date = date_values[0]
+
+    # If no Date column exists, try Date Submitted.
+    if not submitted_date and "Date Submitted" in df.columns:
+
+        date_values = (
+            df["Date Submitted"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+
+        date_values = [
+            value
+            for value in date_values
+            if value
+            and value.lower()
+            not in [
+                "nan",
+                "none",
+            ]
+        ]
+
+        if date_values:
+
+            submitted_date = date_values[0]
+
+    if not submitted_date:
+
+        raise ValueError(
+            f"{uploaded_file.name} does not contain "
+            "a usable Date or Date Submitted column."
+        )
+
+    # --------------------------------------------------------
+    # Clean rows
+    # --------------------------------------------------------
+
+    df = df.dropna(
+        how="all"
+    )
+
+    if "SSCC Code" in df.columns:
+
+        df = df[
+            ~df["SSCC Code"].apply(
+                is_summary_row
+            )
+        ]
+
+    # Remove explicit NA rows.
+    na_mask = df.map(
+        is_explicit_na
+    ).any(axis=1)
+
+    df = df[
+        ~na_mask
+    ]
+
+    # --------------------------------------------------------
+    # Calculate SKU counts
+    # --------------------------------------------------------
+
+    item_codes = (
+        df["Item Code"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    item_codes = item_codes[
+        ~item_codes.str.lower().isin(
+            [
+                "",
+                "nan",
+                "none",
+            ]
+        )
+    ]
+
+    if item_codes.empty:
+
+        raise ValueError(
+            f"{uploaded_file.name} contains no "
+            "usable Item Code values."
+        )
+
+    sku_counts = (
+        item_codes
+        .value_counts()
+        .sort_index()
+        .to_dict()
+    )
+
+    return {
+        "filename": uploaded_file.name,
+        "load_ref": load_ref,
+        "date_submitted": submitted_date,
+        "sku_counts": sku_counts,
+        "row_count": len(df),
+    }
+
+
+def normalise_history_date(value):
+    """
+    Convert a history date into a consistent comparison string.
+    """
+
+    if pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+
+    if not text:
+        return ""
+
+    parsed = pd.to_datetime(
+        text,
+        dayfirst=True,
+        errors="coerce",
+    )
+
+    if pd.isna(parsed):
+        return text
+
+    return parsed.strftime(
+        "%d/%m/%Y %H:%M"
+    )
+
+
+def import_historic_csvs(
+    imported_records
+):
+    """
+    Merge historic CSV records into the existing
+    GitHub SKU history.
+    """
+
+    existing_content, _ = get_github_file(
+        SKU_HISTORY_PATH
+    )
+
+    if existing_content:
+
+        try:
+
+            history_df = pd.read_csv(
+                io.StringIO(existing_content),
+                dtype=str,
+            )
+
+        except Exception:
+
+            history_df = pd.DataFrame()
+
+    else:
+
+        history_df = pd.DataFrame()
+
+    if history_df.empty:
+
+        history_df = pd.DataFrame(
+            columns=[
+                "Date Submitted",
+                "Load Ref",
+            ]
+        )
+
+    if "Date Submitted" not in history_df.columns:
+
+        history_df.insert(
+            0,
+            "Date Submitted",
+            "",
+        )
+
+    if "Load Ref" not in history_df.columns:
+
+        history_df.insert(
+            1,
+            "Load Ref",
+            "",
+        )
+
+    # --------------------------------------------------------
+    # Ensure all new SKU columns exist
+    # --------------------------------------------------------
+
+    for record in imported_records:
+
+        for sku in record["sku_counts"].keys():
+
+            if sku not in history_df.columns:
+
+                history_df[sku] = 0
+
+    sku_columns = [
+        column
+        for column in history_df.columns
+        if column not in [
+            "Date Submitted",
+            "Load Ref",
+        ]
+    ]
+
+    # --------------------------------------------------------
+    # Normalise existing numeric columns
+    # --------------------------------------------------------
+
+    if sku_columns:
+
+        history_df[sku_columns] = (
+            history_df[sku_columns]
+            .fillna(0)
+            .apply(
+                pd.to_numeric,
+                errors="coerce",
+            )
+            .fillna(0)
+            .astype(int)
+        )
+
+    # --------------------------------------------------------
+    # Existing load/date combinations
+    # --------------------------------------------------------
+
+    existing_keys = set()
+
+    for _, row in history_df.iterrows():
+
+        existing_load = str(
+            row.get(
+                "Load Ref",
+                "",
+            )
+        ).strip()
+
+        existing_date = (
+            normalise_history_date(
+                row.get(
+                    "Date Submitted",
+                    "",
+                )
+            )
+        )
+
+        if existing_load and existing_date:
+
+            existing_keys.add(
+                (
+                    existing_load.lower(),
+                    existing_date,
+                )
+            )
+
+    # --------------------------------------------------------
+    # Add imported records
+    # --------------------------------------------------------
+
+    added_records = []
+    skipped_records = []
+
+    for record in imported_records:
+
+        load_ref = str(
+            record["load_ref"]
+        ).strip()
+
+        submitted_date = normalise_history_date(
+            record["date_submitted"]
+        )
+
+        key = (
+            load_ref.lower(),
+            submitted_date,
+        )
+
+        if key in existing_keys:
+
+            skipped_records.append(
+                {
+                    "Filename": record["filename"],
+                    "Load Ref": load_ref,
+                    "Date Submitted": submitted_date,
+                    "Reason": "Already exists",
+                }
+            )
+
+            continue
+
+        new_row = {
+            "Date Submitted": submitted_date,
+            "Load Ref": load_ref,
+        }
+
+        for sku in sku_columns:
+
+            new_row[sku] = int(
+                record["sku_counts"].get(
+                    sku,
+                    0,
+                )
+            )
+
+        history_df = pd.concat(
+            [
+                history_df,
+                pd.DataFrame([new_row]),
+            ],
+            ignore_index=True,
+        )
+
+        existing_keys.add(
+            key
+        )
+
+        added_records.append(
+            record
+        )
+
+    # --------------------------------------------------------
+    # Keep history numeric
+    # --------------------------------------------------------
+
+    if sku_columns:
+
+        history_df[sku_columns] = (
+            history_df[sku_columns]
+            .fillna(0)
+            .apply(
+                pd.to_numeric,
+                errors="coerce",
+            )
+            .fillna(0)
+            .astype(int)
+        )
+
+    # --------------------------------------------------------
+    # Upload updated history
+    # --------------------------------------------------------
+
+    if added_records:
+
+        history_csv = history_df.to_csv(
+            index=False,
+            encoding="utf-8-sig",
+        )
+
+        upload_github_file(
+            file_path=SKU_HISTORY_PATH,
+            file_content=history_csv,
+            commit_message=(
+                "Import historic CSV loads into "
+                "SKU history"
+            ),
+        )
+
+    return (
+        history_df,
+        added_records,
+        skipped_records,
+    )
 
 
 # ============================================================
@@ -856,29 +1354,39 @@ def show_home():
         )
 
     # --------------------------------------------------------
-    # MORE TOOLS
+    # HISTORIC IMPORT
     # --------------------------------------------------------
 
     with col6:
 
         st.markdown(
-            '<div class="tool-icon">🔧</div>',
+            '<div class="tool-icon">📥</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-title">'
-            'More Tools'
+            'Import Historic CSVs'
             '</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-description">'
-            'Additional Campeys tools can be added here.'
+            'Import previous SSCC CSVs into the '
+            'load history.'
             '</div>',
             unsafe_allow_html=True,
         )
+
+        if st.button(
+            "Import Historic CSVs",
+            key="open_import",
+            use_container_width=True,
+        ):
+
+            go_to("import")
+            st.rerun()
 
 
 # ============================================================
@@ -930,10 +1438,6 @@ def show_history():
 
             return
 
-        # ====================================================
-        # IDENTIFY SKU COLUMNS
-        # ====================================================
-
         non_sku_columns = [
             "Date Submitted",
             "Load Ref",
@@ -953,10 +1457,6 @@ def show_history():
 
             return
 
-        # ====================================================
-        # CLEAN SKU VALUES
-        # ====================================================
-
         for sku in sku_columns:
 
             history_df[sku] = (
@@ -966,10 +1466,6 @@ def show_history():
                 )
                 .fillna(0)
             )
-
-        # ====================================================
-        # CHART CONTROLS
-        # ====================================================
 
         st.subheader(
             "SKU Quantity Chart"
@@ -986,9 +1482,9 @@ def show_history():
             key="history_chart_view",
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # HISTORIC TOTALS
-        # ====================================================
+        # ----------------------------------------------------
 
         if chart_view == "Historic Totals":
 
@@ -1033,9 +1529,9 @@ def show_history():
                     use_container_width=True,
                 )
 
-        # ====================================================
+        # ----------------------------------------------------
         # BY LOAD
-        # ====================================================
+        # ----------------------------------------------------
 
         elif chart_view == "By Load":
 
@@ -1106,9 +1602,9 @@ def show_history():
                         use_container_width=True,
                     )
 
-        # ====================================================
+        # ----------------------------------------------------
         # BY DATE SENT
-        # ====================================================
+        # ----------------------------------------------------
 
         elif chart_view == "By Date Sent":
 
@@ -1201,9 +1697,9 @@ def show_history():
                         use_container_width=True,
                     )
 
-        # ====================================================
+        # ----------------------------------------------------
         # HISTORICAL DATA TABLE
-        # ====================================================
+        # ----------------------------------------------------
 
         st.divider()
 
@@ -1240,6 +1736,392 @@ def show_history():
         st.error(
             f"Unable to load the history table: {exc}"
         )
+
+
+# ============================================================
+# HISTORIC CSV IMPORT SCREEN
+# ============================================================
+
+def show_import():
+
+    st.button(
+        "← Back to Home",
+        key="import_back",
+        on_click=go_to,
+        args=("home",),
+    )
+
+    st.title(
+        "📥 Import Historic CSVs"
+    )
+
+    st.caption(
+        "Import previous SSCC CSV files into the "
+        "Campeys SKU load history."
+    )
+
+    st.info(
+        "Select one or more historic SSCC CSV files. "
+        "The importer will read the Load Ref, Date and "
+        "Item Code values and add the SKU counts to the "
+        "GitHub load history."
+    )
+
+    uploaded_files = st.file_uploader(
+        "Select Historic CSV Files",
+        type=["csv"],
+        accept_multiple_files=True,
+        key="historic_csv_uploader",
+    )
+
+    if not uploaded_files:
+
+        st.markdown(
+            """
+            **Expected CSV format**
+
+            The historic files should contain at least:
+
+            - `Load Ref`
+            - `Date`
+            - `Item Code`
+
+            The importer will count the Item Code entries
+            to create the SKU quantities for each load.
+            """
+        )
+
+        return
+
+    st.subheader(
+        "Files Selected"
+    )
+
+    import_records = []
+    import_errors = []
+
+    # --------------------------------------------------------
+    # Read selected files
+    # --------------------------------------------------------
+
+    for uploaded_file in uploaded_files:
+
+        try:
+
+            record = extract_historic_csv_data(
+                uploaded_file
+            )
+
+            import_records.append(
+                record
+            )
+
+        except Exception as exc:
+
+            import_errors.append(
+                {
+                    "Filename": uploaded_file.name,
+                    "Error": str(exc),
+                }
+            )
+
+    # --------------------------------------------------------
+    # Show errors
+    # --------------------------------------------------------
+
+    if import_errors:
+
+        st.error(
+            f"{len(import_errors)} file(s) could not "
+            "be read."
+        )
+
+        st.dataframe(
+            pd.DataFrame(
+                import_errors
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if not import_records:
+
+        st.warning(
+            "There are no valid historic CSVs to import."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Build preview
+    # --------------------------------------------------------
+
+    preview_rows = []
+
+    for record in import_records:
+
+        preview_rows.append(
+            {
+                "Filename": record["filename"],
+                "Load Ref": record["load_ref"],
+                "Date Submitted": record[
+                    "date_submitted"
+                ],
+                "SKU Count": len(
+                    record["sku_counts"]
+                ),
+                "Rows Processed": record[
+                    "row_count"
+                ],
+            }
+        )
+
+    st.dataframe(
+        pd.DataFrame(
+            preview_rows
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Show SKU preview
+    # --------------------------------------------------------
+
+    st.subheader(
+        "SKU Preview"
+    )
+
+    sku_preview_rows = []
+
+    for record in import_records:
+
+        for sku, quantity in record[
+            "sku_counts"
+        ].items():
+
+            sku_preview_rows.append(
+                {
+                    "Load Ref": record[
+                        "load_ref"
+                    ],
+                    "Date Submitted": record[
+                        "date_submitted"
+                    ],
+                    "SKU": sku,
+                    "Quantity": quantity,
+                }
+            )
+
+    if sku_preview_rows:
+
+        sku_preview_df = pd.DataFrame(
+            sku_preview_rows
+        )
+
+        st.dataframe(
+            sku_preview_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # --------------------------------------------------------
+    # Import button
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.warning(
+        "Importing will update the GitHub "
+        "sku_counts_history.csv file."
+    )
+
+    confirm_import = st.checkbox(
+        "I have checked the files above and want "
+        "to add them to the load history.",
+        key="confirm_historic_import",
+    )
+
+    if not confirm_import:
+
+        st.info(
+            "Tick the confirmation box to enable "
+            "the import."
+        )
+
+        return
+
+    if st.button(
+        "📥 Import Historic Loads",
+        type="primary",
+        use_container_width=True,
+        key="import_historic_button",
+    ):
+
+        try:
+
+            with st.spinner(
+                "Checking existing load history..."
+            ):
+
+                history_df_before, _, _ = (
+                    import_historic_csvs(
+                        []
+                    )
+                )
+
+            existing_keys = set()
+
+            for _, row in history_df_before.iterrows():
+
+                existing_load = str(
+                    row.get(
+                        "Load Ref",
+                        "",
+                    )
+                ).strip()
+
+                existing_date = (
+                    normalise_history_date(
+                        row.get(
+                            "Date Submitted",
+                            "",
+                        )
+                    )
+                )
+
+                if existing_load and existing_date:
+
+                    existing_keys.add(
+                        (
+                            existing_load.lower(),
+                            existing_date,
+                        )
+                    )
+
+            records_to_import = []
+            already_exists = []
+
+            for record in import_records:
+
+                record_key = (
+                    str(
+                        record["load_ref"]
+                    ).strip().lower(),
+                    normalise_history_date(
+                        record[
+                            "date_submitted"
+                        ]
+                    ),
+                )
+
+                if record_key in existing_keys:
+
+                    already_exists.append(
+                        record
+                    )
+
+                else:
+
+                    records_to_import.append(
+                        record
+                    )
+
+                    existing_keys.add(
+                        record_key
+                    )
+
+            if not records_to_import:
+
+                st.info(
+                    "All selected historic loads already "
+                    "exist in the load history. Nothing "
+                    "was imported."
+                )
+
+                return
+
+            with st.spinner(
+                "Adding historic loads to GitHub..."
+            ):
+
+                (
+                    updated_history,
+                    added_records,
+                    skipped_records,
+                ) = import_historic_csvs(
+                    records_to_import
+                )
+
+            st.success(
+                f"Successfully imported "
+                f"{len(added_records)} historic load(s)."
+            )
+
+            if already_exists:
+
+                st.warning(
+                    f"{len(already_exists)} selected "
+                    "load(s) were skipped because they "
+                    "already exist in the history."
+                )
+
+                skipped_display = pd.DataFrame(
+                    [
+                        {
+                            "Filename": record[
+                                "filename"
+                            ],
+                            "Load Ref": record[
+                                "load_ref"
+                            ],
+                            "Date Submitted": record[
+                                "date_submitted"
+                            ],
+                            "Reason": "Already exists",
+                        }
+                        for record in already_exists
+                    ]
+                )
+
+                st.dataframe(
+                    skipped_display,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.subheader(
+                "Updated Load History"
+            )
+
+            st.dataframe(
+                updated_history,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            updated_history_csv = (
+                updated_history.to_csv(
+                    index=False,
+                    encoding="utf-8-sig",
+                )
+            )
+
+            st.download_button(
+                "Download Updated Load History",
+                data=updated_history_csv.encode(
+                    "utf-8-sig"
+                ),
+                file_name=SKU_HISTORY_PATH,
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        except Exception as exc:
+
+            st.error(
+                f"Historic import failed: {exc}"
+            )
 
 
 # ============================================================
@@ -1680,6 +2562,10 @@ elif st.session_state.page == "sender":
 elif st.session_state.page == "history":
 
     show_history()
+
+elif st.session_state.page == "import":
+
+    show_import()
 
 elif st.session_state.page == "contacts":
 
