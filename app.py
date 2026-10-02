@@ -10,15 +10,24 @@ import requests
 import streamlit as st
 
 
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+
 st.set_page_config(
     page_title="KP to Campeys SSCC Sender",
+    page_icon="📦",
     layout="wide",
 )
 
 st.title("📦 KP to Campeys SSCC Sender")
 
 
-EXPECTED_WMS_COLUMNS = [
+# ============================================================
+# CONSTANTS
+# ============================================================
+
+EXPECTED_COLUMNS = [
     "SSCC Code",
     "Item Code",
     "Description",
@@ -30,7 +39,7 @@ EXPECTED_WMS_COLUMNS = [
     "Catch Weight To Remove",
 ]
 
-FINAL_COLUMN_ORDER = [
+FINAL_COLUMNS = [
     "Load Ref",
     "Date",
     "SSCC Code",
@@ -45,56 +54,61 @@ FINAL_COLUMN_ORDER = [
     "Catch Weight To Remove",
 ]
 
+GITHUB_OWNER = "lukeoreillykp"
+GITHUB_REPO = "Kp-to-campeys-sscc-conversion"
+GITHUB_BRANCH = "main"
+GITHUB_FOLDER = "saved_loads"
 
-# =========================================================
+EMAIL_TO = "Luke.oreilly@kpsnacks.com"
+
+
+# ============================================================
 # GITHUB SETTINGS
-# =========================================================
+# ============================================================
 
 def get_github_settings():
-    token = st.secrets.get("github_token")
-    username = st.secrets.get("github_username")
-    repo = st.secrets.get("github_repo")
+    """Read GitHub settings from Streamlit secrets."""
+
+    try:
+        token = st.secrets["github_token"]
+        username = st.secrets["github_username"]
+        repo = st.secrets["github_repo"]
+    except Exception as exc:
+        raise ValueError(
+            "GitHub settings are missing from Streamlit Secrets. "
+            "Please add github_token, github_username and github_repo."
+        ) from exc
+
+    token = str(token).strip()
+    username = str(username).strip()
+    repo = str(repo).strip()
 
     if not token:
-        raise ValueError(
-            "Missing github_token in Streamlit Secrets."
-        )
+        raise ValueError("github_token is empty.")
 
     if not username:
-        raise ValueError(
-            "Missing github_username in Streamlit Secrets."
-        )
+        raise ValueError("github_username is empty.")
 
     if not repo:
-        raise ValueError(
-            "Missing github_repo in Streamlit Secrets."
-        )
+        raise ValueError("github_repo is empty.")
 
-    return (
-        str(token).strip(),
-        str(username).strip().strip("/"),
-        str(repo).strip().strip("/"),
-    )
+    return token, username, repo
 
 
-# =========================================================
-# CLEAN FILENAME
-# =========================================================
+# ============================================================
+# FILENAME CLEANING
+# ============================================================
 
 def clean_filename(filename):
+    """Make a safe filename for GitHub."""
+
     filename = str(filename).strip()
 
-    filename = re.sub(
-        r'[\\/*?:"<>|]',
-        "",
-        filename,
-    )
+    # Remove invalid filename characters
+    filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
 
-    filename = re.sub(
-        r"\s+",
-        " ",
-        filename,
-    )
+    # Collapse whitespace
+    filename = re.sub(r"\s+", " ", filename).strip()
 
     if not filename:
         filename = "wms_output"
@@ -105,636 +119,538 @@ def clean_filename(filename):
     return filename
 
 
-# =========================================================
-# SUMMARY ROW CHECK
-# =========================================================
+# ============================================================
+# ROW FILTERING HELPERS
+# ============================================================
 
 def is_summary_row(value):
-    if pd.isna(value):
+    """Return True for blank/summary rows."""
+
+    if value is None:
         return True
 
     value = str(value).strip().lower()
 
-    if value == "":
+    if not value:
         return True
 
-    if "total" in value:
-        return True
-
-    if value in (
+    summary_values = {
+        "total",
+        "totals",
+        "grand total",
+        "grand totals",
+        "summary",
         "na",
         "n/a",
-        "n-a",
-        "n.a.",
-        "n.a",
-    ):
+    }
+
+    if value in summary_values:
+        return True
+
+    if value.startswith("total"):
         return True
 
     return False
 
 
-# =========================================================
-# EXPLICIT NA CHECK
-# =========================================================
-
 def is_explicit_na(value):
-    if pd.isna(value):
-        return False
+    """Return True when a cell contains an explicit NA value."""
 
-    value = str(value).strip().lower()
+    if value is None:
+        return True
 
-    cleaned = re.sub(
-        r"[\s./\\#_-]+",
-        "",
-        value,
-    )
+    cleaned = str(value).strip().lower()
+
+    # Remove common punctuation
+    cleaned = re.sub(r"[\s\-_./]+", "", cleaned)
 
     return cleaned == "na"
 
 
-# =========================================================
+# ============================================================
 # READ WMS DATA
-# =========================================================
+# ============================================================
 
 def read_wms_data(text):
-    if not text or not text.strip():
-        raise ValueError(
-            "No WMS data was supplied."
-        )
+    """Read pasted WMS data and detect tab/comma delimiter."""
 
     text = text.strip()
 
-    if "\t" in text:
-        separator = "\t"
+    if not text:
+        raise ValueError("No WMS data was supplied.")
+
+    # Detect delimiter from the first non-empty line
+    first_line = next(
+        (line for line in text.splitlines() if line.strip()),
+        "",
+    )
+
+    if "\t" in first_line:
+        delimiter = "\t"
     else:
-        separator = ","
+        delimiter = ","
 
     df = pd.read_csv(
         io.StringIO(text),
-        sep=separator,
+        sep=delimiter,
         dtype=str,
         keep_default_na=False,
     )
 
-    df.columns = (
-        df.columns
-        .astype(str)
-        .str.strip()
-    )
+    # Clean column names
+    df.columns = [
+        str(column).strip()
+        for column in df.columns
+    ]
 
     return df
 
 
-# =========================================================
-# UPLOAD TO GITHUB
-# =========================================================
+# ============================================================
+# GITHUB UPLOAD
+# ============================================================
 
 def upload_to_github(csv_bytes, filename):
+    """
+    Upload CSV to GitHub using the Contents API.
 
-    # -----------------------------------------------------
-    # Get GitHub settings
-    # -----------------------------------------------------
+    Provides detailed diagnostics for:
+    - token authentication
+    - repository access
+    - existing file detection
+    - upload/write failures
+    """
 
-    try:
-        (
-            token,
-            username,
-            repo,
-        ) = get_github_settings()
+    token, username, repo = get_github_settings()
 
-    except ValueError as error:
-        st.error(
-            "❌ GitHub configuration error:\n\n"
-            + str(error)
-        )
-        return False
+    filename = clean_filename(filename)
 
-    # -----------------------------------------------------
-    # Clean GitHub settings
-    # -----------------------------------------------------
-
-    username = username.strip().strip("/")
-    repo = repo.strip().strip("/")
-    filename = filename.strip().lstrip("/")
-
-    # -----------------------------------------------------
-    # GitHub file path
-    # -----------------------------------------------------
-
-    file_path = (
-        "saved_loads/"
-        + filename
+    # Build repository and file URLs
+    repo_url = (
+        f"https://api.github.com/repos/"
+        f"{urllib.parse.quote(username, safe='')}/"
+        f"{urllib.parse.quote(repo, safe='')}"
     )
 
-    encoded_username = urllib.parse.quote(
-        username,
-        safe="",
+    file_path = f"{GITHUB_FOLDER}/{filename}"
+
+    encoded_path = "/".join(
+        urllib.parse.quote(part, safe="")
+        for part in file_path.split("/")
     )
 
-    encoded_repo = urllib.parse.quote(
-        repo,
-        safe="",
-    )
-
-    encoded_file_path = urllib.parse.quote(
-        file_path,
-        safe="/",
-    )
-
-    url = (
-        "https://api.github.com/repos/"
-        + encoded_username
-        + "/"
-        + encoded_repo
-        + "/contents/"
-        + encoded_file_path
-    )
-
-    # -----------------------------------------------------
-    # GitHub headers
-    # -----------------------------------------------------
+    file_url = f"{repo_url}/contents/{encoded_path}"
 
     headers = {
-        "Authorization": "Bearer " + token,
+        "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "KP-to-Campeys-SSCC-Sender",
     }
 
-    encoded_file = base64.b64encode(
-        csv_bytes
-    ).decode("utf-8")
-
-    # -----------------------------------------------------
-    # Check whether file already exists
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # STEP 1 - Check authentication
+    # --------------------------------------------------------
 
     try:
-        check = requests.get(
-            url,
+        user_response = requests.get(
+            "https://api.github.com/user",
             headers=headers,
             timeout=20,
         )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Could not connect to GitHub while checking authentication: {exc}"
+        ) from exc
 
-    except requests.RequestException as error:
-        st.error(
-            "❌ Could not connect to GitHub.\n\n"
-            + str(error)
-        )
-        return False
-
-    # =====================================================
-    # FILE ALREADY EXISTS
-    # =====================================================
-
-    if check.status_code == 200:
-
+    if user_response.status_code != 200:
         try:
-            existing = check.json()
-
-        except ValueError:
-            st.error(
-                "❌ GitHub returned an invalid response "
-                "when checking the existing file."
+            response_json = user_response.json()
+            github_message = response_json.get(
+                "message",
+                user_response.text,
             )
-            return False
+        except Exception:
+            github_message = user_response.text
 
-        sha = existing.get("sha")
-
-        if not sha:
-            st.error(
-                "❌ GitHub found the existing file but "
-                "did not return its SHA."
-            )
-            return False
-
-        payload = {
-            "message": (
-                "Archive automated reformat entry: "
-                + filename
-            ),
-            "content": encoded_file,
-            "sha": sha,
-        }
-
-    # =====================================================
-    # FILE DOES NOT EXIST
-    # =====================================================
-
-    elif check.status_code == 404:
-
-        # A 404 can mean either:
-        #
-        # 1. The file does not exist yet.
-        #    This is OK.
-        #
-        # 2. The repository cannot be found.
-        #    This needs fixing.
-        #
-        # We therefore check the repository itself.
-
-        repository_url = (
-            "https://api.github.com/repos/"
-            + encoded_username
-            + "/"
-            + encoded_repo
+        raise RuntimeError(
+            "GitHub authentication failed.\n\n"
+            f"HTTP status: {user_response.status_code}\n"
+            f"GitHub message: {github_message}\n\n"
+            "Check that github_token in Streamlit Secrets is valid "
+            "and has not expired or been revoked."
         )
 
+    authenticated_user = user_response.json().get(
+        "login",
+        "unknown",
+    )
+
+    # --------------------------------------------------------
+    # STEP 2 - Check repository access
+    # --------------------------------------------------------
+
+    try:
+        repo_response = requests.get(
+            repo_url,
+            headers=headers,
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Could not connect to GitHub while checking the repository: {exc}"
+        ) from exc
+
+    if repo_response.status_code != 200:
         try:
-            repository_check = requests.get(
-                repository_url,
-                headers=headers,
-                timeout=20,
+            response_json = repo_response.json()
+            github_message = response_json.get(
+                "message",
+                repo_response.text,
             )
+        except Exception:
+            github_message = repo_response.text
 
-        except requests.RequestException as error:
-            st.error(
-                "❌ Could not verify the GitHub repository.\n\n"
-                + str(error)
-            )
-            return False
+        raise RuntimeError(
+            "GitHub repository check failed.\n\n"
+            f"Repository: {username}/{repo}\n"
+            f"HTTP status: {repo_response.status_code}\n"
+            f"GitHub message: {github_message}\n\n"
+            "Check github_username and github_repo in Streamlit Secrets. "
+            "Also make sure the GitHub account represented by the token "
+            "has permission to write to this repository."
+        )
 
-        # -------------------------------------------------
-        # Repository could not be found
-        # -------------------------------------------------
+    repo_info = repo_response.json()
 
-        if repository_check.status_code != 200:
+    default_branch = repo_info.get(
+        "default_branch",
+        GITHUB_BRANCH,
+    )
 
-            try:
-                repository_error = (
-                    repository_check.json()
-                )
+    # --------------------------------------------------------
+    # STEP 3 - Check whether file already exists
+    # --------------------------------------------------------
 
-            except ValueError:
-                repository_error = (
-                    repository_check.text
-                )
+    params = {
+        "ref": default_branch,
+    }
 
-            st.error(
-                "❌ GitHub repository could not be found.\n\n"
-                + "Repository: "
-                + username
-                + "/"
-                + repo
-                + "\n\n"
-                + "HTTP status: "
-                + str(
-                    repository_check.status_code
-                )
-                + "\n\nGitHub response:\n"
-                + str(repository_error)
-            )
+    try:
+        file_response = requests.get(
+            file_url,
+            headers=headers,
+            params=params,
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Could not check the GitHub file path: {exc}"
+        ) from exc
 
-            st.info(
-                "Check your Streamlit Secrets. "
-                "github_username must be the GitHub account "
-                "or organisation that owns the repository, "
-                "and github_repo must be the repository name."
-            )
+    sha = None
 
-            return False
+    if file_response.status_code == 200:
+        try:
+            existing_file = file_response.json()
+            sha = existing_file.get("sha")
+        except Exception:
+            sha = None
 
-        # -------------------------------------------------
-        # Repository exists, so create the file
-        # -------------------------------------------------
-
-        payload = {
-            "message": (
-                "Archive automated reformat entry: "
-                + filename
-            ),
-            "content": encoded_file,
-        }
-
-    # =====================================================
-    # OTHER GITHUB ERROR
-    # =====================================================
+    elif file_response.status_code == 404:
+        # This is normal when the file doesn't exist yet.
+        pass
 
     else:
-
         try:
-            error_details = check.json()
+            response_json = file_response.json()
+            github_message = response_json.get(
+                "message",
+                file_response.text,
+            )
+        except Exception:
+            github_message = file_response.text
 
-        except ValueError:
-            error_details = check.text
-
-        st.error(
-            "❌ GitHub rejected the archive check.\n\n"
-            + "Repository: "
-            + username
-            + "/"
-            + repo
-            + "\n\n"
-            + "Path: "
-            + file_path
-            + "\n\n"
-            + "HTTP status: "
-            + str(check.status_code)
-            + "\n\nGitHub response:\n"
-            + str(error_details)
+        raise RuntimeError(
+            "GitHub file/path check failed.\n\n"
+            f"Path: {file_path}\n"
+            f"HTTP status: {file_response.status_code}\n"
+            f"GitHub message: {github_message}"
         )
 
-        return False
+    # --------------------------------------------------------
+    # STEP 4 - Encode CSV
+    # --------------------------------------------------------
 
-    # =====================================================
-    # UPLOAD / UPDATE FILE
-    # =====================================================
+    encoded_content = base64.b64encode(csv_bytes).decode("utf-8")
+
+    upload_payload = {
+        "message": (
+            f"Archive WMS load CSV: {filename}"
+        ),
+        "content": encoded_content,
+        "branch": default_branch,
+    }
+
+    # If the file already exists, GitHub requires the SHA.
+    if sha:
+        upload_payload["sha"] = sha
+
+    # --------------------------------------------------------
+    # STEP 5 - Upload
+    # --------------------------------------------------------
 
     try:
-        response = requests.put(
-            url,
+        upload_response = requests.put(
+            file_url,
             headers=headers,
-            json=payload,
+            json=upload_payload,
             timeout=30,
         )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Could not connect to GitHub during upload: {exc}"
+        ) from exc
 
-    except requests.RequestException as error:
-        st.error(
-            "❌ Could not connect to GitHub while "
-            "uploading the archive.\n\n"
-            + str(error)
+    if upload_response.status_code not in (200, 201):
+        try:
+            response_json = upload_response.json()
+            github_message = response_json.get(
+                "message",
+                upload_response.text,
+            )
+            github_errors = response_json.get(
+                "errors",
+                "",
+            )
+        except Exception:
+            github_message = upload_response.text
+            github_errors = ""
+
+        error_text = (
+            "GitHub upload failed.\n\n"
+            f"Authenticated GitHub user: {authenticated_user}\n"
+            f"Repository: {username}/{repo}\n"
+            f"Branch: {default_branch}\n"
+            f"Path: {file_path}\n"
+            f"HTTP status: {upload_response.status_code}\n"
+            f"GitHub message: {github_message}"
         )
-        return False
 
-    # =====================================================
-    # SUCCESS
-    # =====================================================
+        if github_errors:
+            error_text += (
+                f"\nGitHub errors: {github_errors}"
+            )
 
-    if response.status_code in (200, 201):
-
-        st.success(
-            "📂 Cloud Archive: "
-            + filename
-            + " successfully saved to GitHub."
+        error_text += (
+            "\n\nFor a classic GitHub token, make sure the token "
+            "has the `repo` scope and that the authenticated account "
+            "has write access to this repository."
         )
 
-        return True
-
-    # =====================================================
-    # UPLOAD ERROR
-    # =====================================================
+        raise RuntimeError(error_text)
 
     try:
-        error_details = response.json()
+        upload_result = upload_response.json()
+    except Exception:
+        upload_result = {}
 
-    except ValueError:
-        error_details = response.text
-
-    st.error(
-        "❌ GitHub rejected the archive upload.\n\n"
-        + "Repository: "
-        + username
-        + "/"
-        + repo
-        + "\n\n"
-        + "Path: "
-        + file_path
-        + "\n\n"
-        + "HTTP status: "
-        + str(response.status_code)
-        + "\n\nGitHub response:\n"
-        + str(error_details)
+    commit_url = (
+        upload_result
+        .get("commit", {})
+        .get("html_url")
     )
 
-    return False
-
-
-# =========================================================
-# 1. ADDITIONAL INFORMATION
-# =========================================================
-
-st.subheader("1. Additional Information")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    load_ref = st.text_input(
-        "Enter Load Ref "
-        "(Names your file and repeats in Load Ref column):"
+    html_url = (
+        upload_result
+        .get("content", {})
+        .get("html_url")
     )
 
-with col2:
-    jde_order_ref = st.text_input(
-        "Enter JDE Order Ref "
-        "(Populates the Movement column):"
-    )
+    return {
+        "filename": filename,
+        "path": file_path,
+        "authenticated_user": authenticated_user,
+        "repository": f"{username}/{repo}",
+        "branch": default_branch,
+        "commit_url": commit_url,
+        "file_url": html_url,
+    }
 
 
-# =========================================================
-# 2. WMS DATA INPUT
-# =========================================================
+# ============================================================
+# USER INPUTS
+# ============================================================
 
-st.subheader("2. Paste WMS Data Below")
+st.subheader("Load Information")
 
-st.caption(
-    "Include your header row. Copy the entire grid "
-    "from your WMS and paste it below."
+load_ref = st.text_input(
+    "Load Ref",
+    placeholder="Enter Load Ref",
 )
 
-pasted_text = st.text_area(
-    "Paste data here:",
-    height=250,
-    placeholder=(
-        "SSCC Code\tItem Code\tDescription\tUnits\t"
-        "Rotation Date\tBatch\tStatus\tPositive Release\t"
-        "Catch Weight To Remove"
-    ),
+jde_order_ref = st.text_input(
+    "JDE Order Ref",
+    placeholder="Enter JDE Order Ref",
+)
+
+st.subheader("Paste WMS Data")
+
+wms_data = st.text_area(
+    "WMS Data",
+    height=350,
+    placeholder="Paste the WMS data here...",
 )
 
 process_button = st.button(
-    "Process & Generate Files",
+    "🚀 Process & Archive",
     type="primary",
 )
 
 
-# =========================================================
-# 3. PROCESS DATA
-# =========================================================
+# ============================================================
+# PROCESS
+# ============================================================
 
 if process_button:
 
-    # -----------------------------------------------------
-    # Validate Load Ref
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Validate user inputs
+    # --------------------------------------------------------
 
     if not load_ref.strip():
-        st.error(
-            "Please enter a Load Ref."
-        )
+        st.error("Please enter a Load Ref.")
         st.stop()
-
-    # -----------------------------------------------------
-    # Validate JDE Order Ref
-    # -----------------------------------------------------
 
     if not jde_order_ref.strip():
-        st.error(
-            "Please enter a JDE Order Ref."
-        )
+        st.error("Please enter a JDE Order Ref.")
         st.stop()
 
-    # -----------------------------------------------------
-    # Validate WMS data
-    # -----------------------------------------------------
-
-    if not pasted_text.strip():
-        st.error(
-            "Please paste the WMS data."
-        )
+    if not wms_data.strip():
+        st.error("Please paste the WMS data.")
         st.stop()
 
-    # -----------------------------------------------------
+    # --------------------------------------------------------
     # Read WMS data
-    # -----------------------------------------------------
+    # --------------------------------------------------------
 
     try:
-        df = read_wms_data(
-            pasted_text
-        )
-
-    except Exception as error:
-        st.error(
-            "❌ Could not read the WMS data.\n\n"
-            + str(error)
-        )
+        df = read_wms_data(wms_data)
+    except Exception as exc:
+        st.error(f"Could not read the WMS data: {exc}")
         st.stop()
 
-    # -----------------------------------------------------
-    # Check required columns
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Validate columns
+    # --------------------------------------------------------
 
     missing_columns = [
         column
-        for column in EXPECTED_WMS_COLUMNS
+        for column in EXPECTED_COLUMNS
         if column not in df.columns
     ]
 
     if missing_columns:
         st.error(
-            "❌ The following WMS columns are missing:\n\n"
+            "The following required columns are missing:\n\n"
             + "\n".join(
-                "- " + column
+                f"- {column}"
                 for column in missing_columns
             )
         )
+
+        st.write("Columns detected in the pasted data:")
+        st.write(list(df.columns))
+
         st.stop()
 
-    # -----------------------------------------------------
-    # Remove blank rows
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Keep only expected columns
+    # --------------------------------------------------------
 
-    df = df.replace(
-        r"^\s*$",
-        pd.NA,
-        regex=True,
-    )
+    df = df[EXPECTED_COLUMNS].copy()
 
-    df = df.dropna(
-        how="all"
-    ).copy()
-
-    original_count = len(df)
-
-    # -----------------------------------------------------
-    # Remove summary / total rows
-    # -----------------------------------------------------
-
-    summary_mask = df[
-        "SSCC Code"
-    ].apply(
-        is_summary_row
-    )
-
-    summary_removed = int(
-        summary_mask.sum()
-    )
+    # --------------------------------------------------------
+    # Remove completely blank rows
+    # --------------------------------------------------------
 
     df = df[
-        ~summary_mask
+        df.apply(
+            lambda row: any(
+                str(value).strip()
+                for value in row
+            ),
+            axis=1,
+        )
     ].copy()
 
-    # -----------------------------------------------------
-    # Remove explicit NA rows
-    # -----------------------------------------------------
-
-    na_mask = df.apply(
-        lambda row: any(
-            is_explicit_na(value)
-            for value in row
-        ),
-        axis=1,
-    )
-
-    na_removed = int(
-        na_mask.sum()
-    )
+    # --------------------------------------------------------
+    # Remove summary rows
+    # --------------------------------------------------------
 
     df = df[
-        ~na_mask
+        ~df["SSCC Code"].apply(is_summary_row)
     ].copy()
 
-    # -----------------------------------------------------
-    # Check valid rows
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Remove rows containing explicit NA
+    # --------------------------------------------------------
+
+    df = df[
+        ~df.apply(
+            lambda row: any(
+                is_explicit_na(value)
+                for value in row
+            ),
+            axis=1,
+        )
+    ].copy()
 
     if df.empty:
         st.error(
-            "❌ No valid rows remain after filtering."
+            "No valid WMS rows remain after filtering."
         )
         st.stop()
 
-    # -----------------------------------------------------
-    # UK date/time
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Add Load Ref, Date and Movement
+    # --------------------------------------------------------
 
-    timezone = pytz.timezone(
-        "Europe/London"
-    )
+    london_tz = pytz.timezone("Europe/London")
 
-    current_time = datetime.now(
-        timezone
-    ).strftime(
-        "%d/%m/%Y %H:%M"
-    )
-
-    # -----------------------------------------------------
-    # Add output fields
-    # -----------------------------------------------------
+    current_datetime = datetime.now(
+        london_tz
+    ).strftime("%d/%m/%Y %H:%M")
 
     df["Load Ref"] = load_ref.strip()
-    df["Date"] = current_time
+    df["Date"] = current_datetime
     df["Movement"] = jde_order_ref.strip()
 
-    # -----------------------------------------------------
-    # Check final columns
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Reorder final columns
+    # --------------------------------------------------------
 
-    missing_output = [
+    missing_final_columns = [
         column
-        for column in FINAL_COLUMN_ORDER
+        for column in FINAL_COLUMNS
         if column not in df.columns
     ]
 
-    if missing_output:
+    if missing_final_columns:
         st.error(
-            "❌ Output columns are missing:\n\n"
+            "The following final columns are missing:\n\n"
             + "\n".join(
-                "- " + column
-                for column in missing_output
+                f"- {column}"
+                for column in missing_final_columns
             )
         )
         st.stop()
 
-    # -----------------------------------------------------
-    # Create final output
-    # -----------------------------------------------------
+    output_df = df[FINAL_COLUMNS].copy()
 
-    output_df = df[
-        FINAL_COLUMN_ORDER
-    ].copy()
-
-    # -----------------------------------------------------
+    # --------------------------------------------------------
     # SKU counts
-    # -----------------------------------------------------
+    # --------------------------------------------------------
 
     sku_counts = (
         output_df["Item Code"]
@@ -743,217 +659,169 @@ if process_button:
         .replace("", pd.NA)
         .dropna()
         .value_counts()
+        .rename_axis("Item Code")
+        .reset_index(name="Count")
     )
 
-    rows_removed = (
-        summary_removed
-        + na_removed
-    )
-
-    # -----------------------------------------------------
-    # Success
-    # -----------------------------------------------------
-
-    st.success(
-        "🎉 WMS data successfully converted!"
-    )
-
-    st.caption(
-        "Input rows: "
-        + str(original_count)
-        + " | Rows removed: "
-        + str(rows_removed)
-        + " | Output rows: "
-        + str(len(output_df))
-    )
-
-    # -----------------------------------------------------
-    # Display processed data
-    # -----------------------------------------------------
-
-    st.dataframe(
-        output_df,
-        use_container_width=True,
-    )
-
-    # -----------------------------------------------------
+    # --------------------------------------------------------
     # Create CSV
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+
+    csv_bytes = output_df.to_csv(
+        index=False,
+        encoding="utf-8-sig",
+    ).encode("utf-8-sig")
+
+    # --------------------------------------------------------
+    # Filename
+    # --------------------------------------------------------
+
+    timestamp_for_filename = datetime.now(
+        pytz.timezone("Europe/London")
+    ).strftime("%Y%m%d_%H%M%S")
 
     filename = clean_filename(
-        load_ref
+        f"{load_ref.strip()}_{timestamp_for_filename}.csv"
     )
 
-    csv_text = output_df.to_csv(
-        index=False
-    )
+    # --------------------------------------------------------
+    # GitHub upload
+    # --------------------------------------------------------
 
-    csv_bytes = csv_text.encode(
-        "utf-8-sig"
-    )
+    st.subheader("GitHub Archive")
 
-    # -----------------------------------------------------
-    # Upload to GitHub
-    # -----------------------------------------------------
-
-    upload_to_github(
-        csv_bytes,
-        filename,
-    )
-
-    # =====================================================
-    # 4. EXPORT PROCESSED DATA
-    # =====================================================
-
-    st.subheader(
-        "3. Export Processed Data"
-    )
-
-    button1, button2, button3 = st.columns(3)
-
-    # -----------------------------------------------------
-    # Download CSV
-    # -----------------------------------------------------
-
-    with button1:
-
-        st.download_button(
-            label="📥 1. Download CSV Locally",
-            data=csv_bytes,
-            file_name=filename,
-            mime="text/csv",
-            type="primary",
-            use_container_width=True,
-        )
-
-    # -----------------------------------------------------
-    # Pre-filled email
-    # -----------------------------------------------------
-
-    with button2:
-
-        email_recipient = (
-            "Luke.oreilly@kpsnacks.com"
-        )
-
-        email_subject = (
-            str(load_ref)
-            + " Pallet Count by SKU"
-        )
-
-        summary_lines = []
-
-        for sku, count in sku_counts.items():
-
-            summary_lines.append(
-                "• SKU: "
-                + str(sku)
-                + " -> Count: "
-                + str(count)
-            )
-
-        sku_summary = "\n".join(
-            summary_lines
-        )
-
-        email_body = (
-            "Hi Luke,\n\n"
-            "Here is the pallet count breakdown "
-            "summarized by unique SKU for Load Ref: "
-            + str(load_ref)
-            + "\n\n"
-            + sku_summary
-            + "\n\n"
-            "Regards,\n"
-            "WMS Automated Conversion Engine"
-        )
-
-        mailto_url = (
-            "mailto:"
-            + email_recipient
-            + "?subject="
-            + urllib.parse.quote(
-                email_subject
-            )
-            + "&body="
-            + urllib.parse.quote(
-                email_body
-            )
-        )
-
-        st.link_button(
-            "📧 2. Open Pre-Filled Email",
-            url=mailto_url,
-            use_container_width=True,
-        )
-
-    # -----------------------------------------------------
-    # GitHub archive link
-    # -----------------------------------------------------
-
-    with button3:
+    with st.spinner("Testing GitHub connection and uploading..."):
 
         try:
-
-            (
-                _token,
-                github_username,
-                github_repo,
-            ) = get_github_settings()
-
-            repository_url = (
-                "https://github.com/"
-                + github_username
-                + "/"
-                + github_repo
-                + "/tree/main/saved_loads"
+            github_result = upload_to_github(
+                csv_bytes,
+                filename,
             )
 
-            st.link_button(
-                "📋 3. Access Repository Archive",
-                url=repository_url,
-                use_container_width=True,
+        except Exception as exc:
+            st.error(
+                "❌ GitHub archive upload failed"
             )
 
-        except Exception:
+            st.code(
+                str(exc),
+                language="text",
+            )
 
             st.info(
-                "GitHub repository link unavailable."
+                "For a classic GitHub Personal Access Token, "
+                "check that the token has the `repo` scope and "
+                "that the account has write access to the repository."
             )
 
-    # =====================================================
-    # 5. SKU SUMMARY
-    # =====================================================
+            st.stop()
 
-    st.write("---")
+    # --------------------------------------------------------
+    # Upload success
+    # --------------------------------------------------------
 
-    st.subheader(
-        "📊 "
-        + str(load_ref)
-        + " Pallet Count by SKU"
+    st.success(
+        "✅ CSV successfully archived to GitHub."
     )
 
-    if not sku_counts.empty:
+    st.write(
+        f"**Repository:** "
+        f"{github_result['repository']}"
+    )
 
-        summary_df = (
-            sku_counts
-            .rename("Pallet Count")
-            .reset_index()
+    st.write(
+        f"**Branch:** "
+        f"{github_result['branch']}"
+    )
+
+    st.write(
+        f"**Archive path:** "
+        f"`{github_result['path']}`"
+    )
+
+    if github_result.get("file_url"):
+        st.markdown(
+            f"[📄 Open archived CSV on GitHub]"
+            f"({github_result['file_url']})"
         )
 
-        summary_df.columns = [
-            "SKU",
-            "Pallet Count",
-        ]
+    if github_result.get("commit_url"):
+        st.markdown(
+            f"[🔗 Open GitHub commit]"
+            f"({github_result['commit_url']})"
+        )
 
+    # --------------------------------------------------------
+    # Local download
+    # --------------------------------------------------------
+
+    st.subheader("Download")
+
+    st.download_button(
+        label="⬇️ Download CSV",
+        data=csv_bytes,
+        file_name=filename,
+        mime="text/csv",
+    )
+
+    # --------------------------------------------------------
+    # Email
+    # --------------------------------------------------------
+
+    st.subheader("Email")
+
+    sku_lines = []
+
+    for _, row in sku_counts.iterrows():
+        sku_lines.append(
+            f"{row['Item Code']}: {row['Count']}"
+        )
+
+    sku_summary_text = "\n".join(
+        sku_lines
+    )
+
+    email_subject = (
+        f"KP Load {load_ref.strip()} "
+        f"- JDE Order {jde_order_ref.strip()}"
+    )
+
+    email_body = (
+        f"Hi Luke,\n\n"
+        f"Please find the SSCC conversion for "
+        f"Load Ref {load_ref.strip()}.\n\n"
+        f"JDE Order Ref: {jde_order_ref.strip()}\n\n"
+        f"SKU counts:\n"
+        f"{sku_summary_text}\n\n"
+        f"The CSV has also been archived in GitHub "
+        f"under:\n"
+        f"{github_result['path']}\n\n"
+        f"Thanks"
+    )
+
+    mailto_url = (
+        f"mailto:{EMAIL_TO}"
+        f"?subject={urllib.parse.quote(email_subject)}"
+        f"&body={urllib.parse.quote(email_body)}"
+    )
+
+    st.markdown(
+        f"[📧 Open Email in Outlook]({mailto_url})"
+    )
+
+    # --------------------------------------------------------
+    # SKU summary
+    # --------------------------------------------------------
+
+    st.subheader("SKU Summary")
+
+    if not sku_counts.empty:
         st.dataframe(
-            summary_df,
+            sku_counts,
             use_container_width=True,
             hide_index=True,
         )
-
     else:
-
         st.info(
             "No SKU counts were available."
         )
