@@ -153,7 +153,6 @@ if st.button("Process & Email CSV", type="primary"):
                     }
                     
                     response1 = requests.post(url, json=payload1, headers=headers)
-                    # Clean validation using strict status code equality checks
                     if response1.status_code == 201 or response1.status_code == 200:
                         st.success("📧 Master CSV dispatched successfully via Web API!")
                     else:
@@ -170,7 +169,6 @@ if st.button("Process & Email CSV", type="primary"):
                     }
                     
                     response2 = requests.post(url, json=payload2, headers=headers)
-                    # Clean validation using strict status code equality checks
                     if response2.status_code == 201 or response2.status_code == 200:
                         st.success("📊 Summary matrix tables delivered directly to Luke via Web API!")
                     else:
