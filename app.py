@@ -68,25 +68,25 @@ if st.button("Process & Email CSV", type="primary"):
             if missing_cols:
                 st.error(f"❌ Missing expected WMS columns in the pasted data: {missing_cols}. Please check your headers match exactly.")
             else:
-                # Drop completely blank rows
+                # Drop rows that are completely empty across every cell
                 df_clean = df_raw.dropna(how='all').copy()
                 
-                # --- SAFE FILTERING FOR 'NA' values (Handles text and numbers safely) ---
-                # First convert everything to strings safely, handle missing data, and lowercase it
-                def check_for_na(val):
+                # --- UPDATED FILTERING FOR EXACT 'NA' TEXT ONLY ---
+                # This function ignores natural blanks/empty cells, only flagging literal 'na' or 'n/a' strings
+                def contains_literal_na(val):
                     if pd.isna(val):
-                        return True
+                        return False  # Leave natural empty/blank spaces alone
                     val_str = str(val).strip().lower()
                     return val_str in ['n/a', 'na']
 
-                # Create a true/false mask for rows containing NA elements
-                row_has_na = df_clean.map(check_for_na).any(axis=1)
+                # Create a true/false mask identifying rows with explicit 'na' labels
+                row_has_explicit_na = df_clean.map(contains_literal_na).any(axis=1)
                 
-                # Filter out rows matching the criteria
-                df_filtered = df_clean[~row_has_na].copy()
+                # Filter out the matching rows
+                df_filtered = df_clean[~row_has_explicit_na].copy()
                 
                 if df_filtered.empty:
-                    st.error("Filtering complete: All pasted rows contained 'n/a' or missing data. Nothing to send.")
+                    st.error("Filtering complete: All pasted rows contained explicit 'na' values or were entirely empty. Nothing to send.")
                 else:
                     # Get current date and time in UK/London time zone
                     local_tz = pytz.timezone("Europe/London")
@@ -117,7 +117,7 @@ if st.button("Process & Email CSV", type="primary"):
                     
                     output_df = df_filtered[FINAL_COLUMN_ORDER]
                     
-                    st.success(f"🎉 Data successfully processed! (Filtered out {row_has_na.sum()} rows containing 'n/a' or blanks)")
+                    st.success(f"🎉 Data successfully processed! (Filtered out {row_has_explicit_na.sum()} rows explicitly containing 'na' or 'n/a')")
                     st.dataframe(output_df, use_container_width=True)
                     
                     # Create a clean, safe filename from the Load Ref field
