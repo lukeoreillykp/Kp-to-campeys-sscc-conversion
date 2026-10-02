@@ -132,8 +132,6 @@ if st.button("Process & Email CSV", type="primary"):
                     
                     # Fetch API Key from Secrets Dashboard
                     API_KEY = st.secrets["brevo_api_key"]
-                    
-                    # UPDATED CORNERSTONE ENDPOINT URL TO AVOID 404 ROUTING ISSUES
                     url = "https://brevo.com"
                     
                     headers = {
@@ -155,7 +153,8 @@ if st.button("Process & Email CSV", type="primary"):
                     }
                     
                     response1 = requests.post(url, json=payload1, headers=headers)
-                    if response1.status_code in:
+                    # Clean validation using strict status code equality checks
+                    if response1.status_code == 201 or response1.status_code == 200:
                         st.success("📧 Master CSV dispatched successfully via Web API!")
                     else:
                         st.error(f"Failed sending CSV email. API Error: {response1.text}")
@@ -171,7 +170,8 @@ if st.button("Process & Email CSV", type="primary"):
                     }
                     
                     response2 = requests.post(url, json=payload2, headers=headers)
-                    if response2.status_code in:
+                    # Clean validation using strict status code equality checks
+                    if response2.status_code == 201 or response2.status_code == 200:
                         st.success("📊 Summary matrix tables delivered directly to Luke via Web API!")
                     else:
                         st.error(f"Failed sending Summary email. API Error: {response2.text}")
