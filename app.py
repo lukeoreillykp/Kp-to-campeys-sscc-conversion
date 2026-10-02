@@ -20,7 +20,7 @@ col1, col2 = st.columns(2)
 with col1:
     extra_info_1 = st.text_input("Enter Load Ref (Names your file and repeats in Load Ref column):")
 with col2:
-    jde_order_ref = st.text_input("Enter JDE Order Ref (Repeats across the Movement column):")
+    jde_order_ref = st.text_input("Enter JDE Order Ref (Populates the new Movement column):")
 
 # Email Input Field
 st.subheader("2. Recipient Email")
@@ -32,7 +32,7 @@ st.caption("Include your header row! Copy the entire grid from your WMS (Ctrl+A 
 
 pasted_text = st.text_area("Paste data here:", height=250, placeholder="SSCC Code\tItem Code\tDescription\tUnits...")
 
-# Your 10 exact expected WMS column headers
+# Removed "Movement" — now expecting exactly 9 WMS columns from your grid
 EXPECTED_WMS_COLUMNS = [
     "SSCC Code", 
     "Item Code", 
@@ -40,7 +40,6 @@ EXPECTED_WMS_COLUMNS = [
     "Units", 
     "Rotation Date", 
     "Batch", 
-    "Movement", 
     "Status", 
     "Positive Release", 
     "Catch Weight To Remove"
@@ -63,7 +62,7 @@ if st.button("Process & Email CSV", type="primary"):
             # Clean up column names from any accidental trailing whitespace or hidden characters
             df_raw.columns = df_raw.columns.str.strip()
             
-            # Verify all 10 required columns are present in the pasted text
+            # Verify all 9 required columns are present in the pasted text
             missing_cols = [col for col in EXPECTED_WMS_COLUMNS if col not in df_raw.columns]
             
             if missing_cols:
@@ -86,11 +85,11 @@ if st.button("Process & Email CSV", type="primary"):
                     # Formatted to your exact preference: DD/mm/yyyy hh:mm
                     current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
                     
-                    # Inject formatting updates
+                    # Inject metadata headers
                     df_filtered["Load Ref"] = extra_info_1
                     df_filtered["Date"] = current_time
                     
-                    # Overwrite the original Movement data with the JDE Order Ref input across all rows
+                    # Create the Movement column entirely out of the JDE Order Ref input text
                     df_filtered["Movement"] = jde_order_ref
                     
                     # --- FINAL OUTPUT LAYOUT SPECIFICATION ---
@@ -104,7 +103,7 @@ if st.button("Process & Email CSV", type="primary"):
                         "Units",
                         "Rotation Date",
                         "Batch",
-                        "Movement",            # Now filled with the JDE Order Ref data
+                        "Movement",            # Generated fresh from JDE Order Ref input
                         "Status",
                         "Positive Release",
                         "Catch Weight To Remove"
