@@ -71,18 +71,21 @@ if st.button("Process & Email CSV", type="primary"):
                 # Drop rows that are completely empty across every cell
                 df_clean = df_raw.dropna(how='all').copy()
                 
-                # --- UPDATED FILTERING FOR EXACT 'NA' TEXT ONLY ---
-                # This function ignores natural blanks/empty cells, only flagging literal 'na' or 'n/a' strings
-                def contains_literal_na(val):
+                # --- AGGRESSIVE FILTERING FOR ANY 'NA' VARIATION ---
+                def contains_explicit_na(val):
                     if pd.isna(val):
-                        return False  # Leave natural empty/blank spaces alone
-                    val_str = str(val).strip().lower()
-                    return val_str in ['n/a', 'na']
+                        return False  # Leave natural empty/blank cells alone as requested
+                    
+                    # Convert cell value to a clean string: remove spaces, hashes, and slashes, then make lowercase
+                    clean_str = re.sub(r'[\s#\/\\\-_]', '', str(val)).lower()
+                    
+                    # Triggers true if the text matches exactly 'na' (catches na, n/a, #n/a, n/a , etc.)
+                    return clean_str == 'na'
 
                 # Create a true/false mask identifying rows with explicit 'na' labels
-                row_has_explicit_na = df_clean.map(contains_literal_na).any(axis=1)
+                row_has_explicit_na = df_clean.map(contains_explicit_na).any(axis=1)
                 
-                # Filter out the matching rows
+                # Deletes the whole row if any cell contains an explicit 'na' variation
                 df_filtered = df_clean[~row_has_explicit_na].copy()
                 
                 if df_filtered.empty:
@@ -117,7 +120,7 @@ if st.button("Process & Email CSV", type="primary"):
                     
                     output_df = df_filtered[FINAL_COLUMN_ORDER]
                     
-                    st.success(f"🎉 Data successfully processed! (Filtered out {row_has_explicit_na.sum()} rows explicitly containing 'na' or 'n/a')")
+                    st.success(f"🎉 Data successfully processed! (Deleted {row_has_explicit_na.sum()} rows explicitly containing 'na' or 'n/a')")
                     st.dataframe(output_df, use_container_width=True)
                     
                     # Create a clean, safe filename from the Load Ref field
