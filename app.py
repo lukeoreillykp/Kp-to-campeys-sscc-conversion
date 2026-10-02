@@ -10,13 +10,13 @@ from datetime import datetime
 import pytz
 import io
 
-# Title configuration
+# Form Title Configuration
 st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
 st.title("📦 KP to Campeys SSCC Sender")
 
 # 1. Inputs for the 1 piece of additional information
 st.subheader("1. Additional Information")
-extra_info_1 = st.text_input("Enter Field 1 (e.g., Batch ID / File Name):")
+extra_info_1 = st.text_input("Enter Load Ref (This will name your file and repeat in each row):")
 
 # Email Input Field
 st.subheader("2. Recipient Email")
@@ -26,35 +26,44 @@ recipient_email = st.text_input("Send final CSV to:")
 st.subheader("3. Paste WMS Data Below")
 st.caption("Include your header row! Copy the entire grid from your WMS (Ctrl+A -> Ctrl+C) and paste it below (Ctrl+V). Column order does not matter.")
 
-# Using a text area so headers are correctly read as structural data instead of data rows
-pasted_text = st.text_area("Paste data here:", height=250, placeholder="WMS_ID\tSKU\tQty\tCustomer\n12345\tSKU-A\t10\tClient X")
+pasted_text = st.text_area("Paste data here:", height=250, placeholder="SSCC Code\tItem Code\tDescription\tUnits...")
 
-# Define the exact column names your WMS uses (Update these if they change)
-EXPECTED_WMS_COLUMNS = ["WMS_ID", "SKU", "Qty", "Customer"]
+# Your 10 exact expected WMS column headers
+EXPECTED_WMS_COLUMNS = [
+    "SSCC Code", 
+    "Item Code", 
+    "Description", 
+    "Units", 
+    "Rotation Date", 
+    "Batch", 
+    "Movement", 
+    "Status", 
+    "Positive Release", 
+    "Catch Weight To Remove"
+]
 
 # 3. Process & Email Logic
 if st.button("Process & Email CSV", type="primary"):
     if not pasted_text.strip():
         st.error("Please paste some data into the text box first.")
     elif not extra_info_1 or not recipient_email:
-        st.warning("Please fill out the additional information field and the recipient email.")
+        st.warning("Please fill out the Load Ref field and the recipient email.")
     else:
         try:
-            # Detect whether data is tab-separated (copied from Excel/WMS grids) or comma-separated
+            # Detect whether data is tab-separated (from spreadsheet grids) or comma-separated
             separator = '\t' if '\t' in pasted_text else ','
             
             # Read the pasted text dynamically into a DataFrame
-            # This automatically maps data rows to their corresponding header, regardless of column order
             df_raw = pd.read_csv(io.StringIO(pasted_text.strip()), sep=separator)
             
-            # Clean up column names from any accidental trailing spaces
+            # Clean up column names from any accidental trailing whitespace or hidden characters
             df_raw.columns = df_raw.columns.str.strip()
             
-            # Verify all required columns are present in the pasted text
+            # Verify all 10 required columns are present in the pasted text
             missing_cols = [col for col in EXPECTED_WMS_COLUMNS if col not in df_raw.columns]
             
             if missing_cols:
-                st.error(f"❌ Missing expected WMS columns in the pasted data: {missing_cols}. Please check your headers.")
+                st.error(f"❌ Missing expected WMS columns in the pasted data: {missing_cols}. Please check your headers match exactly.")
             else:
                 # Drop completely blank rows
                 df_clean = df_raw.dropna(how='all').copy()
@@ -70,21 +79,28 @@ if st.button("Process & Email CSV", type="primary"):
                 else:
                     # Get current date and time in UK/London time zone
                     local_tz = pytz.timezone("Europe/London")
+                    # Formatted to your exact preference: DD/mm/yyyy hh:mm
                     current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
                     
-                    # Inject new data into columns (using clean target headers)
-                    df_filtered["Batch_ID"] = extra_info_1
-                    df_filtered["Processed_Timestamp"] = current_time
+                    # Inject temporary columns with your exact required output header names
+                    df_filtered["Load Ref"] = extra_info_1
+                    df_filtered["Date"] = current_time
                     
                     # --- FINAL OUTPUT LAYOUT SPECIFICATION ---
-                    # Forces the output into this precise order, no matter how it was pasted
+                    # Forces the final CSV into your exact target structural layout
                     FINAL_COLUMN_ORDER = [
-                        "Batch_ID",            # 1st Column
-                        "Processed_Timestamp",  # 2nd Column
-                        "WMS_ID", 
-                        "SKU", 
-                        "Qty", 
-                        "Customer"
+                        "Load Ref",            # 1st Column
+                        "Date",                # 2nd Column
+                        "SSCC Code",
+                        "Item Code",
+                        "Description",
+                        "Units",
+                        "Rotation Date",
+                        "Batch",
+                        "Movement",
+                        "Status",
+                        "Positive Release",
+                        "Catch Weight To Remove"
                     ]
                     
                     output_df = df_filtered[FINAL_COLUMN_ORDER]
@@ -92,7 +108,7 @@ if st.button("Process & Email CSV", type="primary"):
                     st.success(f"🎉 Data successfully processed! (Filtered out {row_has_na.sum()} rows containing 'n/a' or blanks)")
                     st.dataframe(output_df, use_container_width=True)
                     
-                    # Create a clean, safe filename from the first field
+                    # Create a clean, safe filename from the Load Ref field
                     safe_filename = re.sub(r'[\\/*?:"<>|]', "", extra_info_1).strip()
                     if not safe_filename:
                         safe_filename = "wms_output"
@@ -112,7 +128,7 @@ if st.button("Process & Email CSV", type="primary"):
                     msg['From'] = SENDER_EMAIL
                     msg['To'] = recipient_email
                     msg['Subject'] = f"Campeys SSCC Report - {extra_info_1}"
-                    msg.attach(MIMEText("Please find attached the reformatted KP to Campeys SSCC data.", 'plain'))
+                    msg.attach(MIMEText(f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.", 'plain'))
                     
                     # Attach CSV
                     part = MIMEBase('application', 'octet-stream')
