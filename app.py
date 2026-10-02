@@ -6,17 +6,16 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 import re
+from datetime import datetime
+import pytz
 
-st.set_page_config(page_title="WMS Web Reformatter", layout="wide")
-st.title("📦 kp ponte to campeys sscc sender")
+# Title update as requested
+st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
+st.title("📦 KP to Campeys SSCC Sender")
 
-# 1. Inputs for the 2 pieces of information
-st.subheader("1. load header ")
-col1, col2 = st.columns(2)
-with col1:
-    extra_info_1 = st.text_input("Enter Field 1 (e.g., Batch ID / File Name):")
-with col2:
-    extra_info_2 = st.text_input("Enter Field 2:")
+# 1. Inputs for the 1 piece of additional information
+st.subheader("1. load header")
+extra_info_1 = st.text_input("Enter Field 1 (e.g., Batch ID / File Name):")
 
 # Email Input Field
 st.subheader("2. Recipient Email")
@@ -24,9 +23,9 @@ recipient_email = st.text_input("Send final CSV to:")
 
 # 2. Direct copy-paste grid
 st.subheader("3. Paste WMS Data Below")
-st.caption("Click the first cell and press Ctrl+V to paste directly from your WMS grid.")
+st.caption("Click the first cell and press Ctrl+V to paste data directly from your WMS grid. Column order here does not matter.")
 
-# Change these to match your exact WMS headers
+# Change these strings to match your exact WMS headers
 EXPECTED_INPUT_COLUMNS = ["WMS_ID", "SKU", "Qty", "Customer"] 
 df_template = pd.DataFrame(columns=EXPECTED_INPUT_COLUMNS)
 
@@ -41,37 +40,44 @@ pasted_data = st.data_editor(
 if st.button("Process & Email CSV", type="primary"):
     if pasted_data.empty or pasted_data.dropna(how='all').empty:
         st.error("Please paste some data into the grid first.")
-    elif not extra_info_1 or not extra_info_2 or not recipient_email:
-        st.warning("Please fill out all input fields and the recipient email.")
+    elif not extra_info_1 or not recipient_email:
+        st.warning("Please fill out the additional information field and the recipient email.")
     else:
         # Drop completely blank rows
         df_clean = pasted_data.dropna(how='all').copy()
         
-        # --- IGNORE N/A VALUES ---
-        # Convert all grid data to strings, strip whitespace, and check for text matching 'n/a' or 'N/A'
+        # --- IGNORE ANY CELL SAYING 'NA' ---
         na_mask = df_clean.astype(str).map(lambda x: x.strip().lower() in ['n/a', 'na'])
-        
-        # Also catch natural empty values/NaNs that pandas detects
         nan_mask = df_clean.isna()
-        
-        # Combine masks: Row is removed if ANY cell contains 'n/a' or is completely empty
         row_has_na = (na_mask | nan_mask).any(axis=1)
-        
-        # Keep only rows that DO NOT have an n/a or blank
         df_filtered = df_clean[~row_has_na].copy()
         
         if df_filtered.empty:
             st.error("Filtering complete: All pasted rows contained 'n/a' or missing data. Nothing to send.")
         else:
-            # Inject the data into every line item
-            df_filtered["Extra_Field_1"] = extra_info_1
-            df_filtered["Extra_Field_2"] = extra_info_2
+            # Get current date and time (set to UK/London time zone)
+            local_tz = pytz.timezone("Europe/London")
+            # Reformatted to exactly matching DD/mm/yyyy hh:mm layout
+            current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
             
-            # Change this list to your exact required final layout
-            FINAL_COLUMN_ORDER = ["Extra_Field_1", "WMS_ID", "Extra_Field_2", "SKU", "Qty"]
+            # Inject new data into columns
+            df_filtered["Field_1_Column"] = extra_info_1
+            df_filtered["Timestamp_Column"] = current_time
+            
+            # --- FINAL OUTPUT LAYOUT SPECIFICATION ---
+            FINAL_COLUMN_ORDER = [
+                "Field_1_Column",    # 1st Column
+                "Timestamp_Column",   # 2nd Column
+                "WMS_ID", 
+                "SKU", 
+                "Qty", 
+                "Customer"
+            ]
             
             try:
+                # Reorganise columns instantly regardless of how they were input
                 output_df = df_filtered[FINAL_COLUMN_ORDER]
+                
                 st.success(f"🎉 Data successfully processed! (Filtered out {row_has_na.sum()} rows containing 'n/a' or blanks)")
                 st.dataframe(output_df, use_container_width=True)
                 
@@ -94,10 +100,10 @@ if st.button("Process & Email CSV", type="primary"):
                 msg = MIMEMultipart()
                 msg['From'] = SENDER_EMAIL
                 msg['To'] = recipient_email
-                msg['Subject'] = f"Processed WMS Report - {extra_info_1}"
-                msg.attach(MIMEText("Please find attached the reformatted WMS CSV data (n/a items removed).", 'plain'))
+                msg['Subject'] = f"Campeys SSCC Report - {extra_info_1}"
+                msg.attach(MIMEText("Please find attached the reformatted KP to Campeys SSCC data.", 'plain'))
                 
-                # Attach CSV data with the new dynamic filename
+                # Attach CSV
                 part = MIMEBase('application', 'octet-stream')
                 part.set_payload(csv_data.encode('utf-8'))
                 encoders.encode_base64(part)
@@ -113,6 +119,6 @@ if st.button("Process & Email CSV", type="primary"):
                 st.success(f"📧 Email successfully sent with attachment '{csv_filename}' to {recipient_email}!")
                 
             except KeyError as e:
-                st.error(f"Mapping error. Check your WMS headers. Missing: {e}")
+                st.error(f"Mapping error. Check your WMS input headers. Missing: {e}")
             except Exception as e:
                 st.error(f"Email failed to send. Check your email credentials. Error: {e}")
