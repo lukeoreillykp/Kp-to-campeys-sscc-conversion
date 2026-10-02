@@ -185,7 +185,8 @@ if st.button("Process & Email CSV", type="primary"):
                         msg2['To'] = "Luke.oreilly@kpsnacks.com"
                         msg2['Subject'] = f"{extra_info_1} Pallet Count by SKU"
                         
-                        # Safely piece together the email HTML elements using string concatenation to avoid syntax engine issues
+                        # Safely piece together the email HTML elements using string concatenation
                         email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
                         
                         msg2.attach(MIMEText(email_body, 'html'))
+                        
