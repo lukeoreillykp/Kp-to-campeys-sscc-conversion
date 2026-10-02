@@ -1,6 +1,4 @@
-Absolutely. I’ve added a new Import Historic CSVs tool to the dashboard and built the importer into the full app.
-The importer supports multiple CSVs at once, previews what will be imported, calculates SKU counts from each file's Item Code, checks for duplicate Load Ref + Date combinations, and then updates sku_counts_history.csv in GitHub.
-Writing
+
 import base64
 import io
 import re
