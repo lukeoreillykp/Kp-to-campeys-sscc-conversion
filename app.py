@@ -22,9 +22,9 @@ with col1:
 with col2:
     jde_order_ref = st.text_input("Enter JDE Order Ref (Populates the new Movement column):")
 
-# Email Input Field
+# Email Input Field (Pre-filled with default recipient)
 st.subheader("2. Recipient Email")
-recipient_email = st.text_input("Send final CSV to:")
+recipient_email = st.text_input("Send final CSV to:", value="Luke.oreilly@kpsnacks.com")
 
 # 2. Raw Text Paste Area
 st.subheader("3. Paste WMS Data Below")
@@ -72,12 +72,11 @@ if st.button("Process & Email CSV", type="primary"):
                 df_clean = df_raw.dropna(how='all').copy()
                 
                 # --- PROTECTION 1: DROP INVALID WMS SUMMARY ROWS ---
-                # If the SSCC Code is missing, contains 'total', or is just an N/A variant, discard the row immediately
                 def is_invalid_summary_row(row):
                     sscc_val = str(row.get("SSCC Code", "")).strip().lower()
                     if not sscc_val or pd.isna(row.get("SSCC Code")):
                         return True
-                    if "total" in sscc_val or sscc_val in ["na", "n/a", "n / a"]:
+                    if "total" in ssval or sscc_val in ["na", "n/a", "n / a"]:
                         return True
                     return False
 
@@ -91,8 +90,6 @@ if st.button("Process & Email CSV", type="primary"):
                     
                     # Convert to a clean lowercase string with stripped punctuation
                     clean_str = re.sub(r'[\s#\/\\\-_.]', '', str(val)).lower()
-                    
-                    # Triggers true if 'na' exists anywhere as an independent text segment
                     return "na" in clean_str
 
                 # Identify rows containing written 'na' labels
@@ -111,11 +108,16 @@ if st.button("Process & Email CSV", type="primary"):
                     local_tz = pytz.timezone("Europe/London")
                     current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
                     
-                    # Inject metadata headers
+                    # --- CALCULATE UNIQUE SKU COUNTS FOR SUMMARY EMAIL ---
+                    # Safely convert column to string and count occurrences of each SKU
+                    sku_counts = df_filtered["Item Code"].astype(str).str.strip().value_counts()
+                    
+                    # Transform the counts series into a single-row matrix for a horizontal table look
+                    summary_df = pd.DataFrame([sku_counts.values], columns=sku_counts.index)
+                    
+                    # Inject metadata headers into main data sheet
                     df_filtered["Load Ref"] = extra_info_1
                     df_filtered["Date"] = current_time
-                    
-                    # Create the Movement column out of the JDE Order Ref input text
                     df_filtered["Movement"] = jde_order_ref
                     
                     # --- FINAL OUTPUT LAYOUT SPECIFICATION ---
@@ -148,33 +150,50 @@ if st.button("Process & Email CSV", type="primary"):
                     # Save to temporary CSV string
                     csv_data = output_df.to_csv(index=False)
                     
-                    # --- EMAIL AUTOMATION SECURE SETUP ---
+                    # Fetch credentials from Streamlit secrets background
                     SMTP_SERVER = st.secrets["smtp"]["server"]
                     SMTP_PORT = int(st.secrets["smtp"]["port"])
                     SENDER_EMAIL = st.secrets["smtp"]["sender"]
                     SENDER_PASSWORD = st.secrets["smtp"]["password"]
                     
-                    # Build Email
-                    msg = MIMEMultipart()
-                    msg['From'] = SENDER_EMAIL
-                    msg['To'] = recipient_email
-                    msg['Subject'] = f"Campeys SSCC Report - {extra_info_1}"
-                    msg.attach(MIMEText(f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.", 'plain'))
-                    
-                    # Attach CSV
-                    part = MIMEBase('application', 'octet-stream')
-                    part.set_payload(csv_data.encode('utf-8'))
-                    encoders.encode_base64(part)
-                    part.add_header('Content-Disposition', f"attachment; filename={csv_filename}")
-                    msg.attach(part)
-                    
-                    # Send via Cloud
+                    # Open connection server session
                     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
                         server.starttls()
                         server.login(SENDER_EMAIL, SENDER_PASSWORD)
-                        server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
                         
-                    st.success(f"📧 Email successfully sent with attachment '{csv_filename}' to {recipient_email}!")
-                    
-        except Exception as e:
-            st.error(f"An error occurred during processing: {e}")
+                        # --- EMAIL 1: MASTER DATA CSV DISPATCH ---
+                        msg1 = MIMEMultipart()
+                        msg1['From'] = SENDER_EMAIL
+                        msg1['To'] = recipient_email
+                        msg1['Subject'] = f"Campeys SSCC Report - {extra_info_1}"
+                        msg1.attach(MIMEText(f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.", 'plain'))
+                        
+                        part = MIMEBase('application', 'octet-stream')
+                        part.set_payload(csv_data.encode('utf-8'))
+                        encoders.encode_base64(part)
+                        part.add_header('Content-Disposition', f"attachment; filename={csv_filename}")
+                        msg1.attach(part)
+                        
+                        server.sendmail(SENDER_EMAIL, recipient_email, msg1.as_string())
+                        st.success(f"📧 Master CSV file dispatched to {recipient_email}!")
+                        
+                        # --- EMAIL 2: HORIZONTAL SUMMARY SKU PALLET TABLE ---
+                        msg2 = MIMEMultipart()
+                        msg2['From'] = SENDER_EMAIL
+                        msg2['To'] = "Luke.oreilly@kpsnacks.com"
+                        msg2['Subject'] = f"{extra_info_1} Pallet Count by SKU"
+                        
+                        # Render the dataframe directly into a clean HTML styling table structure
+                        html_table = summary_df.to_html(index=False, border=1, classes='table table-striped')
+                        
+                        email_body = f"""
+                        <html>
+                          <head>
+                            <style>
+                              table {{ border-collapse: collapse; width: 100%; font-family: sans-serif; }}
+                              th, td {{ border: 1px solid #dddddd; text-align: center; padding: 12px; }}
+                              th {{ background-color: #f2f2f2; font-weight: bold; }}
+                            </style>
+                          </head>
+                          <body>
+                            <p>Hi Luke,</p>
