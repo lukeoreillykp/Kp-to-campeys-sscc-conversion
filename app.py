@@ -108,6 +108,7 @@ if st.button("Process & Generate Files", type="primary"):
                     output_df = df_filtered[FINAL_COLUMN_ORDER]
                     
                     st.success(f"🎉 WMS Data successfully converted! (Dropped {total_dropped} invalid summary rows or 'na' lines)")
+                    st.dataframe(output_df, use_container_width=True)
                     
                     # Create clean file properties based on your Load Ref input
                     safe_filename = re.sub(r'[\\/*?:"<>|]', "", extra_info_1).strip()
@@ -186,6 +187,3 @@ if st.button("Process & Generate Files", type="primary"):
                     # Show the absolute converted output preview below everything
                     st.write("---")
                     st.subheader("🔍 Converted Master Data Preview")
-                    st.dataframe(output_df, use_container_width=True)
-                        
-        except Exception as e:
