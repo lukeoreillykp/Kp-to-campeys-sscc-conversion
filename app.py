@@ -76,7 +76,7 @@ if st.button("Process & Email CSV", type="primary"):
                     sscc_val = str(row.get("SSCC Code", "")).strip().lower()
                     if not sscc_val or pd.isna(row.get("SSCC Code")):
                         return True
-                    if "total" in ssval or sscc_val in ["na", "n/a", "n / a"]:
+                    if "total" in sscc_val or sscc_val in ["na", "n/a", "n / a"]:
                         return True
                     return False
 
@@ -183,17 +183,15 @@ if st.button("Process & Email CSV", type="primary"):
                         msg2['To'] = "Luke.oreilly@kpsnacks.com"
                         msg2['Subject'] = f"{extra_info_1} Pallet Count by SKU"
                         
-                        # Render the dataframe directly into a clean HTML styling table structure
-                        html_table = summary_df.to_html(index=False, border=1, classes='table table-striped')
+                        # Generate HTML table strings without conflicting curly braces
+                        html_table = summary_df.to_html(index=False, border=1)
+                        
+                        # Inline styling safely introduced without CSS block curly syntax conflicts
+                        html_table = html_table.replace('class="dataframe"', 'style="border-collapse: collapse; width: 100%; font-family: sans-serif; text-align: center;"')
+                        html_table = html_table.replace('<th>', '<th style="border: 1px solid #dddddd; padding: 12px; background-color: #f2f2f2; font-weight: bold;">')
+                        html_table = html_table.replace('<td>', '<td style="border: 1px solid #dddddd; padding: 12px;">')
                         
                         email_body = f"""
                         <html>
-                          <head>
-                            <style>
-                              table {{ border-collapse: collapse; width: 100%; font-family: sans-serif; }}
-                              th, td {{ border: 1px solid #dddddd; text-align: center; padding: 12px; }}
-                              th {{ background-color: #f2f2f2; font-weight: bold; }}
-                            </style>
-                          </head>
                           <body>
                             <p>Hi Luke,</p>
