@@ -8,10 +8,10 @@ from email import encoders
 import re
 
 st.set_page_config(page_title="WMS Web Reformatter", layout="wide")
-st.title("📦 WMS Data Web Reformatter")
+st.title("📦 kp ponte to campeys sscc sender")
 
 # 1. Inputs for the 2 pieces of information
-st.subheader("1. Additional Information")
+st.subheader("1. load header ")
 col1, col2 = st.columns(2)
 with col1:
     extra_info_1 = st.text_input("Enter Field 1 (e.g., Batch ID / File Name):")
