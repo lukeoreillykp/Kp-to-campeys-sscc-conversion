@@ -76,95 +76,105 @@ if st.button("Process & Email CSV", type="primary"):
             # Verify columns match layout criteria
             missing_cols = [col for col in EXPECTED_WMS_COLUMNS if col not in df_raw.columns]
             if missing_cols:
-                st.error(f"❌ Missing expected WMS columns: {missing_cols}")
-                st.stop()
-                
-            # Filter structural rows
-            df_clean = df_raw.dropna(how='all').copy()
-            summary_rows_mask = df_clean.apply(is_invalid_summary_row, axis=1)
-            df_clean = df_clean[~summary_rows_mask]
-            
-            # Filter explicit text strings
-            row_has_explicit_na = df_clean.map(contains_explicit_na).any(axis=1)
-            df_filtered = df_clean[~row_has_explicit_na].copy()
-            total_dropped = summary_rows_mask.sum() + row_has_explicit_na.sum()
-            
-            if df_filtered.empty:
-                st.error("Filtering complete: No valid data left to dispatch.")
-                st.stop()
-                
-            # Time zone tracking
-            local_tz = pytz.timezone("Europe/London")
-            current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
-            
-            # Generate SKU summary row segments
-            sku_counts = df_filtered["Item Code"].astype(str).str.strip().value_counts()
-            headers_html = "".join([f'<th style="border: 1px solid #dddddd; padding: 12px; background-color: #f2f2f2; font-weight: bold; text-align: center;">{sku}</th>' for sku in sku_counts.index])
-            values_html = "".join([f'<td style="border: 1px solid #dddddd; padding: 12px; text-align: center;">{count}</td>' for count in sku_counts.values])
-            html_table_string = '<table style="border-collapse: collapse; width: 100%; font-family: sans-serif; margin-top: 15px;"><thead><tr>' + headers_html + '</tr></thead><tbody><tr>' + values_html + '</tr></tbody></table>'
-            
-            # Compile main output layout data sheet
-            df_filtered["Load Ref"] = extra_info_1
-            df_filtered["Date"] = current_time
-            df_filtered["Movement"] = jde_order_ref
-            
-            FINAL_COLUMN_ORDER = ["Load Ref", "Date", "SSCC Code", "Item Code", "Description", "Units", "Rotation Date", "Batch", "Movement", "Status", "Positive Release", "Catch Weight To Remove"]
-            output_df = df_filtered[FINAL_COLUMN_ORDER]
-            
-            st.success(f"🎉 Data successfully processed! (Dropped {total_dropped} rows)")
-            st.dataframe(output_df, use_container_width=True)
-            
-            # Save data sheet properties
-            safe_filename = re.sub(r'[\\/*?:"<>|]', "", extra_info_1).strip()
-            csv_filename = f"{safe_filename}.csv" if safe_filename else "wms_output.csv"
-            csv_data = output_df.to_csv(index=False)
-            
-            # Convert CSV data to base64 encoding for API transport
-            b64_csv = base64.b64encode(csv_data.encode('utf-8')).decode('utf-8')
-            
-            # Fetch API Key from Secrets Dashboard
-            API_KEY = st.secrets["brevo_api_key"]
-            url = "https://brevo.com"
-            
-            headers = {
-                "accept": "application/json",
-                "content-type": "application/json",
-                "api-key": API_KEY
-            }
-            
-            # --- WEB DISPATCH 1: MASTER DATA CSV ---
-            payload1 = {
-                "sender": {"email": "kp.ponte.csv@gmail.com", "name": "WMS Reformat Engine"},
-                "to": [{"email": recipient_email}],
-                "subject": f"Campeys SSCC Report - {extra_info_1}",
-                "textContent": f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.",
-                "attachments": [{
-                    "content": b64_csv,
-                    "name": csv_filename
-                }]
-            }
-            
-            response1 = requests.post(url, json=payload1, headers=headers)
-            if response1.status_code in:
-                st.success("📧 Master CSV dispatched successfully via Web API!")
+                st.error(f"❌ Missing expected WMS columns in the pasted data: {missing_cols}. Please check your headers match exactly.")
             else:
-                st.error(f"Failed sending CSV email. API Error: {response1.text}")
+                # Drop rows that are completely empty across every cell
+                df_clean = df_raw.dropna(how='all').copy()
                 
-            # --- WEB DISPATCH 2: SKU PALLET BREAKDOWN TABLE ---
-            email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
-            
-            payload2 = {
-                "sender": {"email": "kp.ponte.csv@gmail.com", "name": "WMS Reformat Engine"},
-                "to": [{"email": "Luke.oreilly@kpsnacks.com"}],
-                "subject": f"{extra_info_1} Pallet Count by SKU",
-                "htmlContent": email_body
-            }
-            
-            response2 = requests.post(url, json=payload2, headers=headers)
-            if response2.status_code in:
-                st.success("📊 Summary matrix tables delivered directly to Luke via Web API!")
-            else:
-                st.error(f"Failed sending Summary email. API Error: {response2.text}")
+                # --- PROTECTION 1: DROP INVALID WMS SUMMARY ROWS ---
+                summary_rows_mask = df_clean.apply(is_invalid_summary_row, axis=1)
+                df_clean = df_clean[~summary_rows_mask]
                 
+                # --- PROTECTION 2: AGGRESSIVE FILTERING FOR ANY 'NA' VARIATION ---
+                row_has_explicit_na = df_clean.map(contains_explicit_na).any(axis=1)
+                df_filtered = df_clean[~row_has_explicit_na].copy()
+                total_dropped = summary_rows_mask.sum() + row_has_explicit_na.sum()
+                
+                if df_filtered.empty:
+                    st.error("Filtering complete: No valid data left to dispatch.")
+                else:
+                    # Get current date and time in UK/London time zone
+                    local_tz = pytz.timezone("Europe/London")
+                    current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
+                    
+                    # --- CALCULATE UNIQUE SKU COUNTS FOR SUMMARY EMAIL ---
+                    sku_counts = df_filtered["Item Code"].astype(str).str.strip().value_counts()
+                    
+                    # Construct table layout row segments safely manually
+                    headers_html = "".join([f'<th style="border: 1px solid #dddddd; padding: 12px; background-color: #f2f2f2; font-weight: bold; text-align: center;">{sku}</th>' for sku in sku_counts.index])
+                    values_html = "".join([f'<td style="border: 1px solid #dddddd; padding: 12px; text-align: center;">{count}</td>' for count in sku_counts.values])
+                    
+                    html_table_string = '<table style="border-collapse: collapse; width: 100%; font-family: sans-serif; margin-top: 15px;"><thead><tr>' + headers_html + '</tr></thead><tbody><tr>' + values_html + '</tr></tbody></table>'
+                    
+                    # Inject metadata headers into main data sheet
+                    df_filtered["Load Ref"] = extra_info_1
+                    df_filtered["Date"] = current_time
+                    df_filtered["Movement"] = jde_order_ref
+                    
+                    # --- FINAL OUTPUT LAYOUT SPECIFICATION ---
+                    FINAL_COLUMN_ORDER = ["Load Ref", "Date", "SSCC Code", "Item Code", "Description", "Units", "Rotation Date", "Batch", "Movement", "Status", "Positive Release", "Catch Weight To Remove"]
+                    output_df = df_filtered[FINAL_COLUMN_ORDER]
+                    
+                    st.success(f"🎉 Data successfully processed! (Safely removed {total_dropped} invalid summary rows or 'na' lines)")
+                    st.dataframe(output_df, use_container_width=True)
+                    
+                    # Create a clean, safe filename from the Load Ref field
+                    safe_filename = re.sub(r'[\\/*?:"<>|]', "", extra_info_1).strip()
+                    if not safe_filename:
+                        safe_filename = "wms_output"
+                    csv_filename = f"{safe_filename}.csv"
+                    
+                    # Save to temporary CSV string
+                    csv_data = output_df.to_csv(index=False)
+                    
+                    # Convert CSV data to base64 encoding for API transport
+                    b64_csv = base64.b64encode(csv_data.encode('utf-8')).decode('utf-8')
+                    
+                    # Fetch API Key from Secrets Dashboard
+                    API_KEY = st.secrets["brevo_api_key"]
+                    url = "https://brevo.com"
+                    
+                    headers = {
+                        "accept": "application/json",
+                        "content-type": "application/json",
+                        "api-key": API_KEY
+                    }
+                    
+                    # --- WEB DISPATCH 1: MASTER DATA CSV ---
+                    payload1 = {
+                        "sender": {"email": "kp.ponte.csv@gmail.com", "name": "WMS Reformat Engine"},
+                        "to": [{"email": recipient_email}],
+                        "subject": f"Campeys SSCC Report - {extra_info_1}",
+                        "textContent": f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.",
+                        "attachments": [{
+                            "content": b64_csv,
+                            "name": csv_filename
+                        }]
+                    }
+                    
+                    response1 = requests.post(url, json=payload1, headers=headers)
+                    # Fixed syntax here: checking for standard success code status
+                    if response1.status_code in:
+                        st.success("📧 Master CSV dispatched successfully via Web API!")
+                    else:
+                        st.error(f"Failed sending CSV email. API Error: {response1.text}")
+                        
+                    # --- WEB DISPATCH 2: SKU PALLET BREAKDOWN TABLE ---
+                    email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
+                    
+                    payload2 = {
+                        "sender": {"email": "kp.ponte.csv@gmail.com", "name": "WMS Reformat Engine"},
+                        "to": [{"email": "Luke.oreilly@kpsnacks.com"}],
+                        "subject": f"{extra_info_1} Pallet Count by SKU",
+                        "htmlContent": email_body
+                    }
+                    
+                    response2 = requests.post(url, json=payload2, headers=headers)
+                    # Fixed syntax here as well
+                    if response2.status_code in:
+                        st.success("📊 Summary matrix tables delivered directly to Luke via Web API!")
+                    else:
+                        st.error(f"Failed sending Summary email. API Error: {response2.text}")
+                        
         except Exception as e:
             st.error(f"An error occurred during API delivery: {e}")
