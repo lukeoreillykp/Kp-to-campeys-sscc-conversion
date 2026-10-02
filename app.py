@@ -1,14 +1,10 @@
 import streamlit as st
 import pandas as pd
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 import re
 from datetime import datetime
 import pytz
 import io
+import urllib.parse
 
 # Form Title Configuration
 st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
@@ -22,12 +18,8 @@ with col1:
 with col2:
     jde_order_ref = st.text_input("Enter JDE Order Ref (Populates the new Movement column):")
 
-# Email Input Field (Pre-filled with default recipient)
-st.subheader("2. Recipient Email")
-recipient_email = st.text_input("Send final CSV to:", value="Luke.oreilly@kpsnacks.com")
-
 # 2. Raw Text Paste Area
-st.subheader("3. Paste WMS Data Below")
+st.subheader("2. Paste WMS Data Below")
 st.caption("Include your header row! Copy the entire grid from your WMS (Ctrl+A -> Ctrl+C) and paste it below (Ctrl+V). Column order does not matter.")
 
 pasted_text = st.text_area("Paste data here:", height=250, placeholder="SSCC Code\tItem Code\tDescription\tUnits...")
@@ -61,12 +53,12 @@ def contains_explicit_na(val):
     clean_str = re.sub(r'[\s#\/\\\-_.]', '', str(val)).lower()
     return "na" in clean_str
 
-# 3. Process & Email Logic
-if st.button("Process & Email CSV", type="primary"):
+# 3. Process & Display Logic
+if st.button("Process & Generate Files", type="primary"):
     if not pasted_text.strip():
         st.error("Please paste some data into the text box first.")
-    elif not extra_info_1 or not jde_order_ref or not recipient_email:
-        st.warning("Please fill out the Load Ref, JDE Order Ref, and the recipient email.")
+    elif not extra_info_1 or not jde_order_ref:
+        st.warning("Please fill out both the Load Ref and JDE Order Ref fields above.")
     else:
         try:
             # Detect separator layout
@@ -94,20 +86,17 @@ if st.button("Process & Email CSV", type="primary"):
                 total_dropped = summary_rows_mask.sum() + row_has_explicit_na.sum()
                 
                 if df_filtered.empty:
-                    st.error("Filtering complete: No valid data left to dispatch.")
+                    st.error("Filtering complete: No valid data left to convert.")
                 else:
                     # Get current date and time in UK/London time zone
                     local_tz = pytz.timezone("Europe/London")
                     current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
                     
-                    # --- CALCULATE UNIQUE SKU COUNTS FOR SUMMARY EMAIL ---
+                    # --- CALCULATE UNIQUE SKU COUNTS FOR SUMMARY PALLETS ---
                     sku_counts = df_filtered["Item Code"].astype(str).str.strip().value_counts()
                     
-                    # Construct table layout row segments safely manually
-                    headers_html = "".join([f'<th style="border: 1px solid #dddddd; padding: 12px; background-color: #f2f2f2; font-weight: bold; text-align: center;">{sku}</th>' for sku in sku_counts.index])
-                    values_html = "".join([f'<td style="border: 1px solid #dddddd; padding: 12px; text-align: center;">{count}</td>' for count in sku_counts.values])
-                    
-                    html_table_string = '<table style="border-collapse: collapse; width: 100%; font-family: sans-serif; margin-top: 15px;"><thead><tr>' + headers_html + '</tr></thead><tbody><tr>' + values_html + '</tr></tbody></table>'
+                    # Create a clean text summary breakdown for the email body text
+                    text_summary = "\n".join([f"• SKU: {sku} -> Count: {count}" for sku, count in sku_counts.items()])
                     
                     # Inject metadata headers into main data sheet
                     df_filtered["Load Ref"] = extra_info_1
@@ -118,55 +107,51 @@ if st.button("Process & Email CSV", type="primary"):
                     FINAL_COLUMN_ORDER = ["Load Ref", "Date", "SSCC Code", "Item Code", "Description", "Units", "Rotation Date", "Batch", "Movement", "Status", "Positive Release", "Catch Weight To Remove"]
                     output_df = df_filtered[FINAL_COLUMN_ORDER]
                     
-                    st.success(f"🎉 Data successfully processed! (Safely removed {total_dropped} invalid summary rows or 'na' lines)")
-                    st.dataframe(output_df, use_container_width=True)
+                    st.success(f"🎉 WMS Data successfully converted! (Dropped {total_dropped} invalid summary rows or 'na' lines)")
                     
-                    # Create a clean, safe filename from the Load Ref field
+                    # Create clean file properties based on your Load Ref input
                     safe_filename = re.sub(r'[\\/*?:"<>|]', "", extra_info_1).strip()
-                    if not safe_filename:
-                        safe_filename = "wms_output"
-                    csv_filename = f"{safe_filename}.csv"
+                    csv_filename = f"{safe_filename}.csv" if safe_filename else "wms_output.csv"
+                    csv_bytes = output_df.to_csv(index=False).encode('utf-8')
                     
-                    # Save to temporary CSV string
-                    csv_data = output_df.to_csv(index=False)
+                    # --- WEB ACTION DASHBOARD ---
+                    st.subheader("3. Export Processed Data")
                     
-                    # Fetch background secrets tokens securely
-                    SMTP_SERVER = st.secrets["smtp"]["server"]
-                    SMTP_PORT = int(st.secrets["smtp"]["port"])
-                    SENDER_EMAIL = st.secrets["smtp"]["sender"]
-                    SENDER_PASSWORD = st.secrets["smtp"]["password"]
+                    # Create two side-by-side action points for the operator
+                    btn_col1, btn_col2 = st.columns(2)
                     
-                    # Connect directly via unblocked native SMTP_SSL (Port 465)
-                    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-                        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+                    with btn_col1:
+                        # Master file browser download button
+                        st.download_button(
+                            label=f"📥 1. Download CSV File",
+                            data=csv_bytes,
+                            file_name=csv_filename,
+                            mime="text/csv",
+                            type="primary",
+                            use_container_width=True
+                        )
+                    
+                    with btn_col2:
+                        # Construct a safe browser link to launch your mail application natively
+                        email_recipient = "Luke.oreilly@kpsnacks.com"
+                        email_subject = f"{extra_info_1} Pallet Count by SKU"
+                        email_body = f"Hi Luke,\n\nHere is the pallet count breakdown summarized by unique SKU for Load Ref: {extra_info_1}\n\n{text_summary}\n\nRegards,\nWMS Automated Conversion Engine"
                         
-                        # --- EMAIL 1: MASTER DATA CSV DISPATCH ---
-                        msg1 = MIMEMultipart()
-                        msg1['From'] = SENDER_EMAIL
-                        msg1['To'] = recipient_email
-                        msg1['Subject'] = f"Campeys SSCC Report - {extra_info_1}"
-                        msg1.attach(MIMEText(f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.", 'plain'))
+                        # Encode characters to safely pass through standard URL schemes
+                        mailto_link = f"mailto:{email_recipient}?subject={urllib.parse.quote(email_subject)}&body={urllib.parse.quote(email_body)}"
                         
-                        part = MIMEBase('application', 'octet-stream')
-                        part.set_payload(csv_data.encode('utf-8'))
-                        encoders.encode_base64(part)
-                        part.add_header('Content-Disposition', f"attachment; filename={csv_filename}")
-                        msg1.attach(part)
-                        
-                        server.sendmail(SENDER_EMAIL, recipient_email, msg1.as_string())
-                        st.success(f"📧 Master CSV file dispatched to {recipient_email}!")
-                        
-                        # --- EMAIL 2: HORIZONTAL SUMMARY SKU PALLET TABLE ---
-                        msg2 = MIMEMultipart()
-                        msg2['From'] = SENDER_EMAIL
-                        msg2['To'] = "Luke.oreilly@kpsnacks.com"
-                        msg2['Subject'] = f"{extra_info_1} Pallet Count by SKU"
-                        
-                        email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
-                        msg2.attach(MIMEText(email_body, 'html'))
-                        
-                        server.sendmail(SENDER_EMAIL, "Luke.oreilly@kpsnacks.com", msg2.as_string())
-                        st.success("📊 SKU Summary table email successfully sent directly to Luke!")
+                        # Render a clean button that safely triggers your mail client
+                        st.link_button("📧 2. Open Pre-Filled Email", url=mailto_link, use_container_width=True)
+                    
+                    # Display Luke's Pallet Summary Metrics Grid right on the page
+                    st.write("---")
+                    st.subheader(f"📊 {extra_info_1} Pallet Count by SKU")
+                    st.dataframe(pd.DataFrame([sku_counts.values], columns=sku_counts.index), use_container_width=True)
+                    
+                    # Show the absolute converted output preview below everything
+                    st.write("---")
+                    st.subheader("🔍 Converted Master Data Preview")
+                    st.dataframe(output_df, use_container_width=True)
                         
         except Exception as e:
-            st.error(f"An error occurred during secure delivery: {e}")
+            st.error(f"An error occurred during file building: {e}")
