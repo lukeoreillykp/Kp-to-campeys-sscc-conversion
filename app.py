@@ -899,7 +899,7 @@ def show_history():
     )
 
     st.caption(
-        "SKU quantities submitted for each processed load."
+        "Explore SKU quantities across all submitted loads."
     )
 
     try:
@@ -922,8 +922,305 @@ def show_history():
             )
         )
 
+        if history_df.empty:
+
+            st.info(
+                "No load history has been created yet."
+            )
+
+            return
+
+        # ====================================================
+        # IDENTIFY SKU COLUMNS
+        # ====================================================
+
+        non_sku_columns = [
+            "Date Submitted",
+            "Load Ref",
+        ]
+
+        sku_columns = [
+            column
+            for column in history_df.columns
+            if column not in non_sku_columns
+        ]
+
+        if not sku_columns:
+
+            st.info(
+                "No SKU history data is available yet."
+            )
+
+            return
+
+        # ====================================================
+        # CLEAN SKU VALUES
+        # ====================================================
+
+        for sku in sku_columns:
+
+            history_df[sku] = (
+                pd.to_numeric(
+                    history_df[sku],
+                    errors="coerce",
+                )
+                .fillna(0)
+            )
+
+        # ====================================================
+        # CHART CONTROLS
+        # ====================================================
+
+        st.subheader(
+            "SKU Quantity Chart"
+        )
+
+        chart_view = st.radio(
+            "View",
+            options=[
+                "Historic Totals",
+                "By Load",
+                "By Date Sent",
+            ],
+            horizontal=True,
+            key="history_chart_view",
+        )
+
+        # ====================================================
+        # HISTORIC TOTALS
+        # ====================================================
+
+        if chart_view == "Historic Totals":
+
+            st.caption(
+                "Total quantity sent for each SKU across "
+                "all historical loads."
+            )
+
+            historic_totals = (
+                history_df[sku_columns]
+                .sum()
+                .sort_values(
+                    ascending=False
+                )
+            )
+
+            historic_totals = historic_totals[
+                historic_totals > 0
+            ]
+
+            if historic_totals.empty:
+
+                st.info(
+                    "There are no SKU quantities "
+                    "available to chart."
+                )
+
+            else:
+
+                historic_chart_df = (
+                    pd.DataFrame(
+                        {
+                            "SKU": historic_totals.index,
+                            "Quantity": historic_totals.values,
+                        }
+                    )
+                    .set_index("SKU")
+                )
+
+                st.bar_chart(
+                    historic_chart_df,
+                    use_container_width=True,
+                )
+
+        # ====================================================
+        # BY LOAD
+        # ====================================================
+
+        elif chart_view == "By Load":
+
+            st.caption(
+                "Select a load to see its SKU quantities."
+            )
+
+            load_options = (
+                history_df["Load Ref"]
+                .dropna()
+                .astype(str)
+                .drop_duplicates()
+                .tolist()
+            )
+
+            if not load_options:
+
+                st.info(
+                    "No load references are available."
+                )
+
+            else:
+
+                selected_load = st.selectbox(
+                    "Select Load",
+                    options=load_options,
+                    key="history_load_selector",
+                )
+
+                selected_rows = history_df[
+                    history_df["Load Ref"].astype(str)
+                    == selected_load
+                ]
+
+                selected_totals = (
+                    selected_rows[sku_columns]
+                    .sum()
+                    .sort_values(
+                        ascending=False
+                    )
+                )
+
+                selected_totals = selected_totals[
+                    selected_totals > 0
+                ]
+
+                if selected_totals.empty:
+
+                    st.info(
+                        "There are no SKU quantities "
+                        "available for this load."
+                    )
+
+                else:
+
+                    selected_chart_df = (
+                        pd.DataFrame(
+                            {
+                                "SKU": selected_totals.index,
+                                "Quantity": selected_totals.values,
+                            }
+                        )
+                        .set_index("SKU")
+                    )
+
+                    st.bar_chart(
+                        selected_chart_df,
+                        use_container_width=True,
+                    )
+
+        # ====================================================
+        # BY DATE SENT
+        # ====================================================
+
+        elif chart_view == "By Date Sent":
+
+            st.caption(
+                "Select a date to see the combined SKU "
+                "quantities from all loads submitted that day."
+            )
+
+            history_df["_Submitted Date"] = (
+                pd.to_datetime(
+                    history_df["Date Submitted"],
+                    dayfirst=True,
+                    errors="coerce",
+                )
+            )
+
+            history_df["_Date Only"] = (
+                history_df["_Submitted Date"]
+                .dt.strftime("%d/%m/%Y")
+            )
+
+            date_options = (
+                history_df["_Date Only"]
+                .dropna()
+                .drop_duplicates()
+                .tolist()
+            )
+
+            date_options = sorted(
+                date_options,
+                key=lambda value: datetime.strptime(
+                    value,
+                    "%d/%m/%Y",
+                ),
+                reverse=True,
+            )
+
+            if not date_options:
+
+                st.info(
+                    "No submission dates are available."
+                )
+
+            else:
+
+                selected_date = st.selectbox(
+                    "Select Date Sent",
+                    options=date_options,
+                    key="history_date_selector",
+                )
+
+                selected_date_rows = history_df[
+                    history_df["_Date Only"]
+                    == selected_date
+                ]
+
+                date_totals = (
+                    selected_date_rows[sku_columns]
+                    .sum()
+                    .sort_values(
+                        ascending=False
+                    )
+                )
+
+                date_totals = date_totals[
+                    date_totals > 0
+                ]
+
+                if date_totals.empty:
+
+                    st.info(
+                        "There are no SKU quantities "
+                        "available for this date."
+                    )
+
+                else:
+
+                    date_chart_df = (
+                        pd.DataFrame(
+                            {
+                                "SKU": date_totals.index,
+                                "Quantity": date_totals.values,
+                            }
+                        )
+                        .set_index("SKU")
+                    )
+
+                    st.bar_chart(
+                        date_chart_df,
+                        use_container_width=True,
+                    )
+
+        # ====================================================
+        # HISTORICAL DATA TABLE
+        # ====================================================
+
+        st.divider()
+
+        st.subheader(
+            "Historical Data"
+        )
+
+        display_history_df = history_df.drop(
+            columns=[
+                "_Submitted Date",
+                "_Date Only",
+            ],
+            errors="ignore",
+        )
+
         st.dataframe(
-            history_df,
+            display_history_df,
             use_container_width=True,
             hide_index=True,
         )
