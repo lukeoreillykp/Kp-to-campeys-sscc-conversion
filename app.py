@@ -753,6 +753,3 @@ if process_button:
             "No SKU counts were available."
         )
 
-This version has the indentation corrected throughout, and I also changed the SKU count calculation to use "output_df", which is the final processed dataset being exported.
-
-You can copy everything inside the code block directly into your Streamlit ".py" file.
