@@ -59,8 +59,11 @@ GITHUB_REPO = "Kp-to-campeys-sscc-conversion"
 GITHUB_BRANCH = "main"
 GITHUB_FOLDER = "saved_loads"
 
+# SKU history file stored in the root of the GitHub repository
+SKU_HISTORY_PATH = "sku_counts_history.csv"
 
 EMAIL_TO = "kpsnacks@campeys.co.uk"
+
 EMAIL_CC = [
     "Luke.oreilly@kpsnacks.com",
     "grayson.swan@kpsnacks.com",
@@ -78,6 +81,7 @@ def get_github_settings():
         token = st.secrets["github_token"]
         username = st.secrets["github_username"]
         repo = st.secrets["github_repo"]
+
     except Exception as exc:
         raise ValueError(
             "GitHub settings are missing from Streamlit Secrets. "
@@ -191,7 +195,9 @@ def read_wms_data(text):
     text = text.strip()
 
     if not text:
-        raise ValueError("No WMS data was supplied.")
+        raise ValueError(
+            "No WMS data was supplied."
+        )
 
     first_line = next(
         (
@@ -223,42 +229,18 @@ def read_wms_data(text):
 
 
 # ============================================================
-# GITHUB UPLOAD
+# GITHUB CONNECTION
 # ============================================================
 
-def upload_to_github(csv_bytes, filename):
-    """
-    Upload CSV to GitHub using the Contents API.
-
-    Provides detailed diagnostics for:
-    - token authentication
-    - repository access
-    - existing file detection
-    - upload/write failures
-    """
+def get_github_connection():
+    """Return GitHub authentication and API information."""
 
     token, username, repo = get_github_settings()
-
-    filename = clean_filename(filename)
 
     repo_url = (
         f"https://api.github.com/repos/"
         f"{urllib.parse.quote(username, safe='')}/"
         f"{urllib.parse.quote(repo, safe='')}"
-    )
-
-    file_path = f"{GITHUB_FOLDER}/{filename}"
-
-    encoded_path = "/".join(
-        urllib.parse.quote(
-            part,
-            safe="",
-        )
-        for part in file_path.split("/")
-    )
-
-    file_url = (
-        f"{repo_url}/contents/{encoded_path}"
     )
 
     headers = {
@@ -269,7 +251,7 @@ def upload_to_github(csv_bytes, filename):
     }
 
     # --------------------------------------------------------
-    # STEP 1 - Check authentication
+    # Check authentication
     # --------------------------------------------------------
 
     try:
@@ -278,6 +260,7 @@ def upload_to_github(csv_bytes, filename):
             headers=headers,
             timeout=20,
         )
+
     except requests.RequestException as exc:
         raise RuntimeError(
             "Could not connect to GitHub while checking "
@@ -302,7 +285,7 @@ def upload_to_github(csv_bytes, filename):
             f"HTTP status: {user_response.status_code}\n"
             f"GitHub message: {github_message}\n\n"
             "Check that github_token in Streamlit Secrets "
-            "is valid and has not expired or been revoked."
+            "is valid."
         )
 
     authenticated_user = user_response.json().get(
@@ -311,7 +294,7 @@ def upload_to_github(csv_bytes, filename):
     )
 
     # --------------------------------------------------------
-    # STEP 2 - Check repository access
+    # Check repository
     # --------------------------------------------------------
 
     try:
@@ -320,6 +303,7 @@ def upload_to_github(csv_bytes, filename):
             headers=headers,
             timeout=20,
         )
+
     except requests.RequestException as exc:
         raise RuntimeError(
             "Could not connect to GitHub while checking "
@@ -343,11 +327,7 @@ def upload_to_github(csv_bytes, filename):
             "GitHub repository check failed.\n\n"
             f"Repository: {username}/{repo}\n"
             f"HTTP status: {repo_response.status_code}\n"
-            f"GitHub message: {github_message}\n\n"
-            "Check github_username and github_repo in "
-            "Streamlit Secrets. Also make sure the GitHub "
-            "account represented by the token has permission "
-            "to write to this repository."
+            f"GitHub message: {github_message}"
         )
 
     repo_info = repo_response.json()
@@ -357,112 +337,183 @@ def upload_to_github(csv_bytes, filename):
         GITHUB_BRANCH,
     )
 
-    # --------------------------------------------------------
-    # STEP 3 - Check whether file already exists
-    # --------------------------------------------------------
-
-    params = {
-        "ref": default_branch,
-    }
-
-    try:
-        file_response = requests.get(
-            file_url,
-            headers=headers,
-            params=params,
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError(
-            "Could not check the GitHub file path: "
-            f"{exc}"
-        ) from exc
-
-    sha = None
-
-    if file_response.status_code == 200:
-
-        try:
-            existing_file = file_response.json()
-
-            sha = existing_file.get(
-                "sha"
-            )
-
-        except Exception:
-            sha = None
-
-    elif file_response.status_code == 404:
-        # Normal if the file does not exist yet.
-        pass
-
-    else:
-
-        try:
-            response_json = file_response.json()
-
-            github_message = response_json.get(
-                "message",
-                file_response.text,
-            )
-
-        except Exception:
-            github_message = file_response.text
-
-        raise RuntimeError(
-            "GitHub file/path check failed.\n\n"
-            f"Path: {file_path}\n"
-            f"HTTP status: {file_response.status_code}\n"
-            f"GitHub message: {github_message}"
-        )
-
-    # --------------------------------------------------------
-    # STEP 4 - Encode CSV
-    # --------------------------------------------------------
-
-    encoded_content = base64.b64encode(
-        csv_bytes
-    ).decode("utf-8")
-
-    upload_payload = {
-        "message": (
-            f"Archive WMS load CSV: {filename}"
-        ),
-        "content": encoded_content,
+    return {
+        "token": token,
+        "username": username,
+        "repo": repo,
+        "repo_url": repo_url,
+        "headers": headers,
+        "authenticated_user": authenticated_user,
         "branch": default_branch,
     }
 
-    if sha:
-        upload_payload["sha"] = sha
 
-    # --------------------------------------------------------
-    # STEP 5 - Upload
-    # --------------------------------------------------------
+# ============================================================
+# GITHUB FILE HELPERS
+# ============================================================
+
+def get_github_file(connection, file_path):
+    """
+    Get a file from GitHub.
+
+    Returns:
+        {
+            "exists": bool,
+            "sha": str or None,
+            "content": bytes or None
+        }
+    """
+
+    encoded_path = "/".join(
+        urllib.parse.quote(
+            part,
+            safe="",
+        )
+        for part in file_path.split("/")
+    )
+
+    file_url = (
+        f"{connection['repo_url']}"
+        f"/contents/{encoded_path}"
+    )
+
+    params = {
+        "ref": connection["branch"],
+    }
 
     try:
-        upload_response = requests.put(
+        response = requests.get(
             file_url,
-            headers=headers,
-            json=upload_payload,
-            timeout=30,
+            headers=connection["headers"],
+            params=params,
+            timeout=20,
         )
+
     except requests.RequestException as exc:
         raise RuntimeError(
-            "Could not connect to GitHub during upload: "
-            f"{exc}"
+            f"Could not read GitHub file '{file_path}': {exc}"
         ) from exc
 
-    if upload_response.status_code not in (
+    # File does not exist yet
+    if response.status_code == 404:
+        return {
+            "exists": False,
+            "sha": None,
+            "content": None,
+            "url": file_url,
+        }
+
+    if response.status_code != 200:
+
+        try:
+            response_json = response.json()
+
+            github_message = response_json.get(
+                "message",
+                response.text,
+            )
+
+        except Exception:
+            github_message = response.text
+
+        raise RuntimeError(
+            f"Could not read GitHub file '{file_path}'.\n\n"
+            f"HTTP status: {response.status_code}\n"
+            f"GitHub message: {github_message}"
+        )
+
+    try:
+        file_info = response.json()
+
+        encoded_content = file_info.get(
+            "content",
+            "",
+        )
+
+        # GitHub may include line breaks in Base64
+        encoded_content = encoded_content.replace(
+            "\n",
+            "",
+        )
+
+        content = base64.b64decode(
+            encoded_content
+        )
+
+        return {
+            "exists": True,
+            "sha": file_info.get("sha"),
+            "content": content,
+            "url": file_info.get(
+                "html_url"
+            ),
+        }
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not decode GitHub file '{file_path}': {exc}"
+        ) from exc
+
+
+def upload_github_file(
+    connection,
+    file_path,
+    file_bytes,
+    commit_message,
+    existing_sha=None,
+):
+    """Create or update a file on GitHub."""
+
+    encoded_path = "/".join(
+        urllib.parse.quote(
+            part,
+            safe="",
+        )
+        for part in file_path.split("/")
+    )
+
+    file_url = (
+        f"{connection['repo_url']}"
+        f"/contents/{encoded_path}"
+    )
+
+    encoded_content = base64.b64encode(
+        file_bytes
+    ).decode("utf-8")
+
+    payload = {
+        "message": commit_message,
+        "content": encoded_content,
+        "branch": connection["branch"],
+    }
+
+    if existing_sha:
+        payload["sha"] = existing_sha
+
+    try:
+        response = requests.put(
+            file_url,
+            headers=connection["headers"],
+            json=payload,
+            timeout=30,
+        )
+
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Could not connect to GitHub during upload: {exc}"
+        ) from exc
+
+    if response.status_code not in (
         200,
         201,
     ):
 
         try:
-            response_json = upload_response.json()
+            response_json = response.json()
 
             github_message = response_json.get(
                 "message",
-                upload_response.text,
+                response.text,
             )
 
             github_errors = response_json.get(
@@ -471,18 +522,19 @@ def upload_to_github(csv_bytes, filename):
             )
 
         except Exception:
-            github_message = upload_response.text
+            github_message = response.text
             github_errors = ""
 
         error_text = (
             "GitHub upload failed.\n\n"
-            f"Authenticated GitHub user: "
-            f"{authenticated_user}\n"
-            f"Repository: {username}/{repo}\n"
-            f"Branch: {default_branch}\n"
+            f"Authenticated user: "
+            f"{connection['authenticated_user']}\n"
+            f"Repository: "
+            f"{connection['username']}/"
+            f"{connection['repo']}\n"
+            f"Branch: {connection['branch']}\n"
             f"Path: {file_path}\n"
-            f"HTTP status: "
-            f"{upload_response.status_code}\n"
+            f"HTTP status: {response.status_code}\n"
             f"GitHub message: {github_message}"
         )
 
@@ -491,40 +543,322 @@ def upload_to_github(csv_bytes, filename):
                 f"\nGitHub errors: {github_errors}"
             )
 
-        error_text += (
-            "\n\nFor a classic GitHub Personal Access Token, "
-            "make sure the token has the `repo` scope and "
-            "that the authenticated account has write access "
-            "to this repository."
-        )
-
         raise RuntimeError(error_text)
 
     try:
-        upload_result = upload_response.json()
-    except Exception:
-        upload_result = {}
+        result = response.json()
 
-    commit_url = (
-        upload_result
-        .get("commit", {})
-        .get("html_url")
+    except Exception:
+        result = {}
+
+    return {
+        "file_url": (
+            result
+            .get("content", {})
+            .get("html_url")
+        ),
+        "commit_url": (
+            result
+            .get("commit", {})
+            .get("html_url")
+        ),
+    }
+
+
+# ============================================================
+# UPLOAD INDIVIDUAL LOAD CSV
+# ============================================================
+
+def upload_to_github(
+    csv_bytes,
+    filename,
+    connection,
+):
+    """Upload the individual load CSV."""
+
+    filename = clean_filename(filename)
+
+    file_path = (
+        f"{GITHUB_FOLDER}/{filename}"
     )
 
-    html_url = (
-        upload_result
-        .get("content", {})
-        .get("html_url")
+    existing_file = get_github_file(
+        connection,
+        file_path,
+    )
+
+    result = upload_github_file(
+        connection=connection,
+        file_path=file_path,
+        file_bytes=csv_bytes,
+        commit_message=(
+            f"Archive WMS load CSV: {filename}"
+        ),
+        existing_sha=existing_file.get(
+            "sha"
+        ),
     )
 
     return {
         "filename": filename,
         "path": file_path,
-        "authenticated_user": authenticated_user,
-        "repository": f"{username}/{repo}",
-        "branch": default_branch,
-        "commit_url": commit_url,
-        "file_url": html_url,
+        "authenticated_user": (
+            connection["authenticated_user"]
+        ),
+        "repository": (
+            f"{connection['username']}/"
+            f"{connection['repo']}"
+        ),
+        "branch": connection["branch"],
+        "commit_url": result.get(
+            "commit_url"
+        ),
+        "file_url": result.get(
+            "file_url"
+        ),
+    }
+
+
+# ============================================================
+# UPDATE SKU HISTORY
+# ============================================================
+
+def update_sku_history(
+    connection,
+    load_ref,
+    submission_date,
+    sku_counts,
+):
+    """
+    Read the existing SKU history from GitHub,
+    add the current load as a new row, add any new
+    SKU columns, and upload the updated history.
+    """
+
+    existing_file = get_github_file(
+        connection,
+        SKU_HISTORY_PATH,
+    )
+
+    # --------------------------------------------------------
+    # Read existing history
+    # --------------------------------------------------------
+
+    if existing_file["exists"]:
+
+        try:
+            history_df = pd.read_csv(
+                io.BytesIO(
+                    existing_file["content"]
+                ),
+                dtype=str,
+                keep_default_na=False,
+            )
+
+        except Exception as exc:
+            raise RuntimeError(
+                "The existing GitHub SKU history file "
+                "could not be read.\n\n"
+                f"Error: {exc}"
+            ) from exc
+
+    else:
+
+        history_df = pd.DataFrame(
+            columns=[
+                "Date Submitted",
+                "Load Ref",
+            ]
+        )
+
+    # --------------------------------------------------------
+    # Ensure required columns exist
+    # --------------------------------------------------------
+
+    if "Date Submitted" not in history_df.columns:
+
+        history_df.insert(
+            0,
+            "Date Submitted",
+            "",
+        )
+
+    if "Load Ref" not in history_df.columns:
+
+        history_df.insert(
+            1,
+            "Load Ref",
+            "",
+        )
+
+    # --------------------------------------------------------
+    # Clean existing columns
+    # --------------------------------------------------------
+
+    history_df.columns = [
+        str(column).strip()
+        for column in history_df.columns
+    ]
+
+    # --------------------------------------------------------
+    # Build new row
+    # --------------------------------------------------------
+
+    new_row = {
+        "Date Submitted": submission_date,
+        "Load Ref": load_ref,
+    }
+
+    for _, row in sku_counts.iterrows():
+
+        item_code = str(
+            row["Item Code"]
+        ).strip()
+
+        if not item_code:
+            continue
+
+        try:
+            count = int(
+                row["Count"]
+            )
+
+        except (ValueError, TypeError):
+            count = 0
+
+        new_row[item_code] = count
+
+    # --------------------------------------------------------
+    # Add any new SKU columns
+    # --------------------------------------------------------
+
+    for column in new_row:
+
+        if column not in history_df.columns:
+
+            history_df[column] = 0
+
+    # --------------------------------------------------------
+    # Make sure all SKU columns contain usable values
+    # --------------------------------------------------------
+
+    fixed_columns = [
+        "Date Submitted",
+        "Load Ref",
+    ]
+
+    sku_columns = [
+        column
+        for column in history_df.columns
+        if column not in fixed_columns
+    ]
+
+    for column in sku_columns:
+
+        if column not in new_row:
+            new_row[column] = 0
+
+    # --------------------------------------------------------
+    # Add new row
+    # --------------------------------------------------------
+
+    new_row_df = pd.DataFrame(
+        [new_row],
+        columns=history_df.columns,
+    )
+
+    history_df = pd.concat(
+        [
+            history_df,
+            new_row_df,
+        ],
+        ignore_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Keep the two fixed columns first
+    # --------------------------------------------------------
+
+    sku_columns = [
+        column
+        for column in history_df.columns
+        if column not in fixed_columns
+    ]
+
+    # Sort SKU columns numerically where possible,
+    # otherwise alphabetically.
+    def sku_sort_key(value):
+        value = str(value)
+
+        if value.isdigit():
+            return (
+                0,
+                int(value),
+            )
+
+        return (
+            1,
+            value.lower(),
+        )
+
+    sku_columns = sorted(
+        sku_columns,
+        key=sku_sort_key,
+    )
+
+    history_df = history_df[
+        fixed_columns + sku_columns
+    ]
+
+    # --------------------------------------------------------
+    # Ensure blank historical SKU cells become 0
+    # --------------------------------------------------------
+
+    for column in sku_columns:
+
+        history_df[column] = (
+            pd.to_numeric(
+                history_df[column],
+                errors="coerce",
+            )
+            .fillna(0)
+            .astype(int)
+        )
+
+    # --------------------------------------------------------
+    # Export history CSV
+    # --------------------------------------------------------
+
+    history_bytes = history_df.to_csv(
+        index=False,
+        encoding="utf-8-sig",
+    ).encode("utf-8-sig")
+
+    # --------------------------------------------------------
+    # Upload updated history to GitHub
+    # --------------------------------------------------------
+
+    result = upload_github_file(
+        connection=connection,
+        file_path=SKU_HISTORY_PATH,
+        file_bytes=history_bytes,
+        commit_message=(
+            f"Update SKU counts history - "
+            f"Load Ref {load_ref}"
+        ),
+        existing_sha=existing_file.get(
+            "sha"
+        ),
+    )
+
+    return {
+        "history_df": history_df,
+        "file_url": result.get(
+            "file_url"
+        ),
+        "commit_url": result.get(
+            "commit_url"
+        ),
     }
 
 
@@ -565,19 +899,25 @@ process_button = st.button(
 if process_button:
 
     # --------------------------------------------------------
-    # Validate user inputs
+    # Validate inputs
     # --------------------------------------------------------
 
     if not load_ref.strip():
-        st.error("Please enter a Load Ref.")
+        st.error(
+            "Please enter a Load Ref."
+        )
         st.stop()
 
     if not jde_order_ref.strip():
-        st.error("Please enter a JDE Order Ref.")
+        st.error(
+            "Please enter a JDE Order Ref."
+        )
         st.stop()
 
     if not wms_data.strip():
-        st.error("Please paste the WMS data.")
+        st.error(
+            "Please paste the WMS data."
+        )
         st.stop()
 
     # --------------------------------------------------------
@@ -585,12 +925,16 @@ if process_button:
     # --------------------------------------------------------
 
     try:
-        df = read_wms_data(wms_data)
+        df = read_wms_data(
+            wms_data
+        )
 
     except Exception as exc:
+
         st.error(
             f"Could not read the WMS data: {exc}"
         )
+
         st.stop()
 
     # --------------------------------------------------------
@@ -624,7 +968,7 @@ if process_button:
         st.stop()
 
     # --------------------------------------------------------
-    # Keep only expected columns
+    # Keep expected columns
     # --------------------------------------------------------
 
     df = df[
@@ -632,7 +976,7 @@ if process_button:
     ].copy()
 
     # --------------------------------------------------------
-    # Remove completely blank rows
+    # Remove blank rows
     # --------------------------------------------------------
 
     df = df[
@@ -670,13 +1014,15 @@ if process_button:
     ].copy()
 
     if df.empty:
+
         st.error(
             "No valid WMS rows remain after filtering."
         )
+
         st.stop()
 
     # --------------------------------------------------------
-    # Add Load Ref, Date and Movement
+    # Date / Load Ref / Movement
     # --------------------------------------------------------
 
     london_tz = pytz.timezone(
@@ -689,12 +1035,18 @@ if process_button:
         "%d/%m/%Y %H:%M"
     )
 
-    df["Load Ref"] = load_ref.strip()
+    df["Load Ref"] = (
+        load_ref.strip()
+    )
+
     df["Date"] = current_datetime
-    df["Movement"] = jde_order_ref.strip()
+
+    df["Movement"] = (
+        jde_order_ref.strip()
+    )
 
     # --------------------------------------------------------
-    # Reorder final columns
+    # Final columns
     # --------------------------------------------------------
 
     missing_final_columns = [
@@ -727,10 +1079,15 @@ if process_button:
         output_df["Item Code"]
         .astype(str)
         .str.strip()
-        .replace("", pd.NA)
+        .replace(
+            "",
+            pd.NA,
+        )
         .dropna()
         .value_counts()
-        .rename_axis("Item Code")
+        .rename_axis(
+            "Item Code"
+        )
         .reset_index(
             name="Count"
         )
@@ -749,10 +1106,14 @@ if process_button:
     # Filename
     # --------------------------------------------------------
 
-    timestamp_for_filename = datetime.now(
-        pytz.timezone("Europe/London")
-    ).strftime(
-        "%Y%m%d_%H%M%S"
+    timestamp_for_filename = (
+        datetime.now(
+            pytz.timezone(
+                "Europe/London"
+            )
+        ).strftime(
+            "%Y%m%d_%H%M%S"
+        )
     )
 
     filename = clean_filename(
@@ -760,26 +1121,27 @@ if process_button:
         f"{timestamp_for_filename}.csv"
     )
 
-    # --------------------------------------------------------
-    # GitHub upload
-    # --------------------------------------------------------
+    # ========================================================
+    # GITHUB
+    # ========================================================
 
-    st.subheader("GitHub Archive")
+    st.subheader(
+        "GitHub Archive"
+    )
 
     with st.spinner(
-        "Testing GitHub connection and uploading..."
+        "Connecting to GitHub..."
     ):
 
         try:
-            github_result = upload_to_github(
-                csv_bytes,
-                filename,
+            connection = (
+                get_github_connection()
             )
 
         except Exception as exc:
 
             st.error(
-                "❌ GitHub archive upload failed"
+                "❌ GitHub connection failed"
             )
 
             st.code(
@@ -787,20 +1149,41 @@ if process_button:
                 language="text",
             )
 
-            st.info(
-                "For a classic GitHub Personal Access Token, "
-                "check that the token has the `repo` scope and "
-                "that the account has write access to the repository."
+            st.stop()
+
+    # --------------------------------------------------------
+    # Upload individual CSV
+    # --------------------------------------------------------
+
+    with st.spinner(
+        "Uploading load CSV..."
+    ):
+
+        try:
+
+            github_result = (
+                upload_to_github(
+                    csv_bytes,
+                    filename,
+                    connection,
+                )
+            )
+
+        except Exception as exc:
+
+            st.error(
+                "❌ GitHub load CSV upload failed"
+            )
+
+            st.code(
+                str(exc),
+                language="text",
             )
 
             st.stop()
 
-    # --------------------------------------------------------
-    # Upload success
-    # --------------------------------------------------------
-
     st.success(
-        "✅ CSV successfully archived to GitHub."
+        "✅ Load CSV successfully archived to GitHub."
     )
 
     st.write(
@@ -818,25 +1201,106 @@ if process_button:
         f"`{github_result['path']}`"
     )
 
-    if github_result.get("file_url"):
+    if github_result.get(
+        "file_url"
+    ):
 
         st.markdown(
             "[📄 Open archived CSV on GitHub]"
             f"({github_result['file_url']})"
         )
 
-    if github_result.get("commit_url"):
+    if github_result.get(
+        "commit_url"
+    ):
 
         st.markdown(
             "[🔗 Open GitHub commit]"
             f"({github_result['commit_url']})"
         )
 
+    # ========================================================
+    # UPDATE SKU HISTORY
+    # ========================================================
+
+    st.subheader(
+        "SKU Counts History"
+    )
+
+    with st.spinner(
+        "Updating SKU counts history..."
+    ):
+
+        try:
+
+            history_result = (
+                update_sku_history(
+                    connection=connection,
+                    load_ref=load_ref.strip(),
+                    submission_date=current_datetime,
+                    sku_counts=sku_counts,
+                )
+            )
+
+        except Exception as exc:
+
+            st.error(
+                "❌ SKU history update failed"
+            )
+
+            st.code(
+                str(exc),
+                language="text",
+            )
+
+            st.info(
+                "The individual load CSV was successfully "
+                "uploaded, but the SKU history table could "
+                "not be updated."
+            )
+
+            st.stop()
+
+    st.success(
+        "✅ SKU counts history updated."
+    )
+
+    st.write(
+        f"**History rows:** "
+        f"{len(history_result['history_df'])}"
+    )
+
+    st.write(
+        f"**SKU columns:** "
+        f"{max(0, len(history_result['history_df'].columns) - 2)}"
+    )
+
+    if history_result.get(
+        "file_url"
+    ):
+
+        st.markdown(
+            "[📊 Open SKU Counts History on GitHub]"
+            f"({history_result['file_url']})"
+        )
+
     # --------------------------------------------------------
-    # Local download
+    # Show history table in app
     # --------------------------------------------------------
 
-    st.subheader("Download")
+    st.dataframe(
+        history_result["history_df"],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # ========================================================
+    # LOCAL DOWNLOAD
+    # ========================================================
+
+    st.subheader(
+        "Download"
+    )
 
     st.download_button(
         label="⬇️ Download CSV",
@@ -845,27 +1309,32 @@ if process_button:
         mime="text/csv",
     )
 
+    # ========================================================
+    # EMAIL
+    # ========================================================
+
+    st.subheader(
+        "Email"
+    )
+
     # --------------------------------------------------------
-    # Email
+    # Build two-row SKU table for email
     # --------------------------------------------------------
 
-    st.subheader("Email")
-
-    # Build two-row SKU table:
-    #
-    # ITEM001    ITEM002    ITEM003
-    # 10         25         7
-    #
     if not sku_counts.empty:
 
         item_codes = [
             str(item)
-            for item in sku_counts["Item Code"]
+            for item in sku_counts[
+                "Item Code"
+            ]
         ]
 
         item_counts = [
             str(count)
-            for count in sku_counts["Count"]
+            for count in sku_counts[
+                "Count"
+            ]
         ]
 
         sku_header_row = "\t".join(
@@ -882,15 +1351,19 @@ if process_button:
         )
 
     else:
+
         sku_table_text = (
             "No SKU counts were available."
         )
 
-    # The GitHub file URL is inserted directly into
-    # the email body. Outlook should automatically
-    # convert it into a clickable hyperlink.
+    # --------------------------------------------------------
+    # Email
+    # --------------------------------------------------------
+
     csv_download_url = (
-        github_result.get("file_url")
+        github_result.get(
+            "file_url"
+        )
         or ""
     )
 
@@ -909,10 +1382,6 @@ if process_button:
         "Thanks"
     )
 
-    # --------------------------------------------------------
-    # Build mailto URL
-    # --------------------------------------------------------
-
     cc_value = ",".join(
         EMAIL_CC
     )
@@ -928,11 +1397,13 @@ if process_button:
         f"[📧 Open Email in Outlook]({mailto_url})"
     )
 
-    # --------------------------------------------------------
-    # SKU summary
-    # --------------------------------------------------------
+    # ========================================================
+    # SKU SUMMARY
+    # ========================================================
 
-    st.subheader("SKU Summary")
+    st.subheader(
+        "Current Load SKU Summary"
+    )
 
     if not sku_counts.empty:
 
