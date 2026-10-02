@@ -59,7 +59,12 @@ GITHUB_REPO = "Kp-to-campeys-sscc-conversion"
 GITHUB_BRANCH = "main"
 GITHUB_FOLDER = "saved_loads"
 
-EMAIL_TO = "Luke.oreilly@kpsnacks.com"
+
+EMAIL_TO = "kpsnacks@campeys.co.uk"
+EMAIL_CC = [
+    "Luke.oreilly@kpsnacks.com",
+    "grayson.swan@kpsnacks.com",
+]
 
 
 # ============================================================
@@ -104,11 +109,17 @@ def clean_filename(filename):
 
     filename = str(filename).strip()
 
-    # Remove invalid filename characters
-    filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
+    filename = re.sub(
+        r'[<>:"/\\|?*]',
+        "_",
+        filename,
+    )
 
-    # Collapse whitespace
-    filename = re.sub(r"\s+", " ", filename).strip()
+    filename = re.sub(
+        r"\s+",
+        " ",
+        filename,
+    ).strip()
 
     if not filename:
         filename = "wms_output"
@@ -161,8 +172,11 @@ def is_explicit_na(value):
 
     cleaned = str(value).strip().lower()
 
-    # Remove common punctuation
-    cleaned = re.sub(r"[\s\-_./]+", "", cleaned)
+    cleaned = re.sub(
+        r"[\s\-_./]+",
+        "",
+        cleaned,
+    )
 
     return cleaned == "na"
 
@@ -179,9 +193,12 @@ def read_wms_data(text):
     if not text:
         raise ValueError("No WMS data was supplied.")
 
-    # Detect delimiter from the first non-empty line
     first_line = next(
-        (line for line in text.splitlines() if line.strip()),
+        (
+            line
+            for line in text.splitlines()
+            if line.strip()
+        ),
         "",
     )
 
@@ -197,7 +214,6 @@ def read_wms_data(text):
         keep_default_na=False,
     )
 
-    # Clean column names
     df.columns = [
         str(column).strip()
         for column in df.columns
@@ -225,7 +241,6 @@ def upload_to_github(csv_bytes, filename):
 
     filename = clean_filename(filename)
 
-    # Build repository and file URLs
     repo_url = (
         f"https://api.github.com/repos/"
         f"{urllib.parse.quote(username, safe='')}/"
@@ -235,11 +250,16 @@ def upload_to_github(csv_bytes, filename):
     file_path = f"{GITHUB_FOLDER}/{filename}"
 
     encoded_path = "/".join(
-        urllib.parse.quote(part, safe="")
+        urllib.parse.quote(
+            part,
+            safe="",
+        )
         for part in file_path.split("/")
     )
 
-    file_url = f"{repo_url}/contents/{encoded_path}"
+    file_url = (
+        f"{repo_url}/contents/{encoded_path}"
+    )
 
     headers = {
         "Authorization": f"token {token}",
@@ -260,16 +280,20 @@ def upload_to_github(csv_bytes, filename):
         )
     except requests.RequestException as exc:
         raise RuntimeError(
-            f"Could not connect to GitHub while checking authentication: {exc}"
+            "Could not connect to GitHub while checking "
+            f"authentication: {exc}"
         ) from exc
 
     if user_response.status_code != 200:
+
         try:
             response_json = user_response.json()
+
             github_message = response_json.get(
                 "message",
                 user_response.text,
             )
+
         except Exception:
             github_message = user_response.text
 
@@ -277,8 +301,8 @@ def upload_to_github(csv_bytes, filename):
             "GitHub authentication failed.\n\n"
             f"HTTP status: {user_response.status_code}\n"
             f"GitHub message: {github_message}\n\n"
-            "Check that github_token in Streamlit Secrets is valid "
-            "and has not expired or been revoked."
+            "Check that github_token in Streamlit Secrets "
+            "is valid and has not expired or been revoked."
         )
 
     authenticated_user = user_response.json().get(
@@ -298,16 +322,20 @@ def upload_to_github(csv_bytes, filename):
         )
     except requests.RequestException as exc:
         raise RuntimeError(
-            f"Could not connect to GitHub while checking the repository: {exc}"
+            "Could not connect to GitHub while checking "
+            f"the repository: {exc}"
         ) from exc
 
     if repo_response.status_code != 200:
+
         try:
             response_json = repo_response.json()
+
             github_message = response_json.get(
                 "message",
                 repo_response.text,
             )
+
         except Exception:
             github_message = repo_response.text
 
@@ -316,9 +344,10 @@ def upload_to_github(csv_bytes, filename):
             f"Repository: {username}/{repo}\n"
             f"HTTP status: {repo_response.status_code}\n"
             f"GitHub message: {github_message}\n\n"
-            "Check github_username and github_repo in Streamlit Secrets. "
-            "Also make sure the GitHub account represented by the token "
-            "has permission to write to this repository."
+            "Check github_username and github_repo in "
+            "Streamlit Secrets. Also make sure the GitHub "
+            "account represented by the token has permission "
+            "to write to this repository."
         )
 
     repo_info = repo_response.json()
@@ -345,29 +374,38 @@ def upload_to_github(csv_bytes, filename):
         )
     except requests.RequestException as exc:
         raise RuntimeError(
-            f"Could not check the GitHub file path: {exc}"
+            "Could not check the GitHub file path: "
+            f"{exc}"
         ) from exc
 
     sha = None
 
     if file_response.status_code == 200:
+
         try:
             existing_file = file_response.json()
-            sha = existing_file.get("sha")
+
+            sha = existing_file.get(
+                "sha"
+            )
+
         except Exception:
             sha = None
 
     elif file_response.status_code == 404:
-        # This is normal when the file doesn't exist yet.
+        # Normal if the file does not exist yet.
         pass
 
     else:
+
         try:
             response_json = file_response.json()
+
             github_message = response_json.get(
                 "message",
                 file_response.text,
             )
+
         except Exception:
             github_message = file_response.text
 
@@ -382,7 +420,9 @@ def upload_to_github(csv_bytes, filename):
     # STEP 4 - Encode CSV
     # --------------------------------------------------------
 
-    encoded_content = base64.b64encode(csv_bytes).decode("utf-8")
+    encoded_content = base64.b64encode(
+        csv_bytes
+    ).decode("utf-8")
 
     upload_payload = {
         "message": (
@@ -392,7 +432,6 @@ def upload_to_github(csv_bytes, filename):
         "branch": default_branch,
     }
 
-    # If the file already exists, GitHub requires the SHA.
     if sha:
         upload_payload["sha"] = sha
 
@@ -409,31 +448,41 @@ def upload_to_github(csv_bytes, filename):
         )
     except requests.RequestException as exc:
         raise RuntimeError(
-            f"Could not connect to GitHub during upload: {exc}"
+            "Could not connect to GitHub during upload: "
+            f"{exc}"
         ) from exc
 
-    if upload_response.status_code not in (200, 201):
+    if upload_response.status_code not in (
+        200,
+        201,
+    ):
+
         try:
             response_json = upload_response.json()
+
             github_message = response_json.get(
                 "message",
                 upload_response.text,
             )
+
             github_errors = response_json.get(
                 "errors",
                 "",
             )
+
         except Exception:
             github_message = upload_response.text
             github_errors = ""
 
         error_text = (
             "GitHub upload failed.\n\n"
-            f"Authenticated GitHub user: {authenticated_user}\n"
+            f"Authenticated GitHub user: "
+            f"{authenticated_user}\n"
             f"Repository: {username}/{repo}\n"
             f"Branch: {default_branch}\n"
             f"Path: {file_path}\n"
-            f"HTTP status: {upload_response.status_code}\n"
+            f"HTTP status: "
+            f"{upload_response.status_code}\n"
             f"GitHub message: {github_message}"
         )
 
@@ -443,9 +492,10 @@ def upload_to_github(csv_bytes, filename):
             )
 
         error_text += (
-            "\n\nFor a classic GitHub token, make sure the token "
-            "has the `repo` scope and that the authenticated account "
-            "has write access to this repository."
+            "\n\nFor a classic GitHub Personal Access Token, "
+            "make sure the token has the `repo` scope and "
+            "that the authenticated account has write access "
+            "to this repository."
         )
 
         raise RuntimeError(error_text)
@@ -536,8 +586,11 @@ if process_button:
 
     try:
         df = read_wms_data(wms_data)
+
     except Exception as exc:
-        st.error(f"Could not read the WMS data: {exc}")
+        st.error(
+            f"Could not read the WMS data: {exc}"
+        )
         st.stop()
 
     # --------------------------------------------------------
@@ -551,6 +604,7 @@ if process_button:
     ]
 
     if missing_columns:
+
         st.error(
             "The following required columns are missing:\n\n"
             + "\n".join(
@@ -559,8 +613,13 @@ if process_button:
             )
         )
 
-        st.write("Columns detected in the pasted data:")
-        st.write(list(df.columns))
+        st.write(
+            "Columns detected in the pasted data:"
+        )
+
+        st.write(
+            list(df.columns)
+        )
 
         st.stop()
 
@@ -568,7 +627,9 @@ if process_button:
     # Keep only expected columns
     # --------------------------------------------------------
 
-    df = df[EXPECTED_COLUMNS].copy()
+    df = df[
+        EXPECTED_COLUMNS
+    ].copy()
 
     # --------------------------------------------------------
     # Remove completely blank rows
@@ -589,7 +650,9 @@ if process_button:
     # --------------------------------------------------------
 
     df = df[
-        ~df["SSCC Code"].apply(is_summary_row)
+        ~df["SSCC Code"].apply(
+            is_summary_row
+        )
     ].copy()
 
     # --------------------------------------------------------
@@ -616,11 +679,15 @@ if process_button:
     # Add Load Ref, Date and Movement
     # --------------------------------------------------------
 
-    london_tz = pytz.timezone("Europe/London")
+    london_tz = pytz.timezone(
+        "Europe/London"
+    )
 
     current_datetime = datetime.now(
         london_tz
-    ).strftime("%d/%m/%Y %H:%M")
+    ).strftime(
+        "%d/%m/%Y %H:%M"
+    )
 
     df["Load Ref"] = load_ref.strip()
     df["Date"] = current_datetime
@@ -637,6 +704,7 @@ if process_button:
     ]
 
     if missing_final_columns:
+
         st.error(
             "The following final columns are missing:\n\n"
             + "\n".join(
@@ -644,9 +712,12 @@ if process_button:
                 for column in missing_final_columns
             )
         )
+
         st.stop()
 
-    output_df = df[FINAL_COLUMNS].copy()
+    output_df = df[
+        FINAL_COLUMNS
+    ].copy()
 
     # --------------------------------------------------------
     # SKU counts
@@ -660,7 +731,9 @@ if process_button:
         .dropna()
         .value_counts()
         .rename_axis("Item Code")
-        .reset_index(name="Count")
+        .reset_index(
+            name="Count"
+        )
     )
 
     # --------------------------------------------------------
@@ -678,10 +751,13 @@ if process_button:
 
     timestamp_for_filename = datetime.now(
         pytz.timezone("Europe/London")
-    ).strftime("%Y%m%d_%H%M%S")
+    ).strftime(
+        "%Y%m%d_%H%M%S"
+    )
 
     filename = clean_filename(
-        f"{load_ref.strip()}_{timestamp_for_filename}.csv"
+        f"{load_ref.strip()}_"
+        f"{timestamp_for_filename}.csv"
     )
 
     # --------------------------------------------------------
@@ -690,7 +766,9 @@ if process_button:
 
     st.subheader("GitHub Archive")
 
-    with st.spinner("Testing GitHub connection and uploading..."):
+    with st.spinner(
+        "Testing GitHub connection and uploading..."
+    ):
 
         try:
             github_result = upload_to_github(
@@ -699,6 +777,7 @@ if process_button:
             )
 
         except Exception as exc:
+
             st.error(
                 "❌ GitHub archive upload failed"
             )
@@ -740,14 +819,16 @@ if process_button:
     )
 
     if github_result.get("file_url"):
+
         st.markdown(
-            f"[📄 Open archived CSV on GitHub]"
+            "[📄 Open archived CSV on GitHub]"
             f"({github_result['file_url']})"
         )
 
     if github_result.get("commit_url"):
+
         st.markdown(
-            f"[🔗 Open GitHub commit]"
+            "[🔗 Open GitHub commit]"
             f"({github_result['commit_url']})"
         )
 
@@ -770,38 +851,76 @@ if process_button:
 
     st.subheader("Email")
 
-    sku_lines = []
+    # Build two-row SKU table:
+    #
+    # ITEM001    ITEM002    ITEM003
+    # 10         25         7
+    #
+    if not sku_counts.empty:
 
-    for _, row in sku_counts.iterrows():
-        sku_lines.append(
-            f"{row['Item Code']}: {row['Count']}"
+        item_codes = [
+            str(item)
+            for item in sku_counts["Item Code"]
+        ]
+
+        item_counts = [
+            str(count)
+            for count in sku_counts["Count"]
+        ]
+
+        sku_header_row = "\t".join(
+            item_codes
         )
 
-    sku_summary_text = "\n".join(
-        sku_lines
+        sku_count_row = "\t".join(
+            item_counts
+        )
+
+        sku_table_text = (
+            f"{sku_header_row}\n"
+            f"{sku_count_row}"
+        )
+
+    else:
+        sku_table_text = (
+            "No SKU counts were available."
+        )
+
+    # The GitHub file URL is inserted directly into
+    # the email body. Outlook should automatically
+    # convert it into a clickable hyperlink.
+    csv_download_url = (
+        github_result.get("file_url")
+        or ""
     )
 
     email_subject = (
-        f"KP Load {load_ref.strip()} "
-        f"- JDE Order {jde_order_ref.strip()}"
+        f"CSV File - Load Ref "
+        f"{load_ref.strip()}"
     )
 
     email_body = (
-        f"Hi Luke,\n\n"
-        f"Please find the SSCC conversion for "
-        f"Load Ref {load_ref.strip()}.\n\n"
-        f"JDE Order Ref: {jde_order_ref.strip()}\n\n"
-        f"SKU counts:\n"
-        f"{sku_summary_text}\n\n"
-        f"The CSV has also been archived in GitHub "
-        f"under:\n"
-        f"{github_result['path']}\n\n"
-        f"Thanks"
+        "Hi\n\n"
+        f"Please download the CSV file for load ref "
+        f"{load_ref.strip()} at the following link:\n\n"
+        f"{csv_download_url}\n\n"
+        "SKU Counts:\n\n"
+        f"{sku_table_text}\n\n"
+        "Thanks"
+    )
+
+    # --------------------------------------------------------
+    # Build mailto URL
+    # --------------------------------------------------------
+
+    cc_value = ",".join(
+        EMAIL_CC
     )
 
     mailto_url = (
         f"mailto:{EMAIL_TO}"
-        f"?subject={urllib.parse.quote(email_subject)}"
+        f"?cc={urllib.parse.quote(cc_value)}"
+        f"&subject={urllib.parse.quote(email_subject)}"
         f"&body={urllib.parse.quote(email_body)}"
     )
 
@@ -816,12 +935,15 @@ if process_button:
     st.subheader("SKU Summary")
 
     if not sku_counts.empty:
+
         st.dataframe(
             sku_counts,
             use_container_width=True,
             hide_index=True,
         )
+
     else:
+
         st.info(
             "No SKU counts were available."
         )
