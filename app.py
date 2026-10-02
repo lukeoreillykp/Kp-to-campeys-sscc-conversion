@@ -109,11 +109,18 @@ if st.button("Process & Email CSV", type="primary"):
                     current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
                     
                     # --- CALCULATE UNIQUE SKU COUNTS FOR SUMMARY EMAIL ---
-                    # Safely convert column to string and count occurrences of each SKU
                     sku_counts = df_filtered["Item Code"].astype(str).str.strip().value_counts()
                     
-                    # Transform the counts series into a single-row matrix for a horizontal table look
-                    summary_df = pd.DataFrame([sku_counts.values], columns=sku_counts.index)
+                    # Construct table layout row segments safely manually
+                    headers_html = "".join([f'<th style="border: 1px solid #dddddd; padding: 12px; background-color: #f2f2f2; font-weight: bold; text-align: center;">{sku}</th>' for sku in sku_counts.index])
+                    values_html = "".join([f'<td style="border: 1px solid #dddddd; padding: 12px; text-align: center;">{count}</td>' for count in sku_counts.values])
+                    
+                    html_table_string = f"""
+                    <table style="border-collapse: collapse; width: 100%; font-family: sans-serif; margin-top: 15px;">
+                      <thead><tr>{headers_html}</tr></thead>
+                      <tbody><tr>{values_html}</tr></tbody>
+                    </table>
+                    """
                     
                     # Inject metadata headers into main data sheet
                     df_filtered["Load Ref"] = extra_info_1
@@ -183,15 +190,9 @@ if st.button("Process & Email CSV", type="primary"):
                         msg2['To'] = "Luke.oreilly@kpsnacks.com"
                         msg2['Subject'] = f"{extra_info_1} Pallet Count by SKU"
                         
-                        # Generate HTML table strings without conflicting curly braces
-                        html_table = summary_df.to_html(index=False, border=1)
-                        
-                        # Inline styling safely introduced without CSS block curly syntax conflicts
-                        html_table = html_table.replace('class="dataframe"', 'style="border-collapse: collapse; width: 100%; font-family: sans-serif; text-align: center;"')
-                        html_table = html_table.replace('<th>', '<th style="border: 1px solid #dddddd; padding: 12px; background-color: #f2f2f2; font-weight: bold;">')
-                        html_table = html_table.replace('<td>', '<td style="border: 1px solid #dddddd; padding: 12px;">')
-                        
                         email_body = f"""
                         <html>
                           <body>
                             <p>Hi Luke,</p>
+                            <p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: {extra_info_1}</strong>:</p>
+                            {html_table_string}
