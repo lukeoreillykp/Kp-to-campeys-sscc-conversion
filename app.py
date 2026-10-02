@@ -1131,7 +1131,10 @@ def show_sender():
             )
         ]
 
-        na_mask = df.applymap(
+        # Pandas 2.1+ / 3.x compatibility:
+        # DataFrame.applymap() was deprecated and
+        # removed in newer pandas versions.
+        na_mask = df.map(
             is_explicit_na
         ).any(axis=1)
 
@@ -1389,3 +1392,5 @@ else:
 
     st.session_state.page = "home"
     st.rerun()
+
+This version specifically replaces the failing "df.applymap(...)" with "df.map(...)".
