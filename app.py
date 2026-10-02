@@ -93,58 +93,50 @@ st.markdown(
     """
     <style>
 
-    .main-title {
-        text-align: center;
-        font-size: 42px;
-        font-weight: 700;
-        margin-top: 10px;
-        margin-bottom: 5px;
-    }
+        .main-title {
+            text-align: center;
+            font-size: 42px;
+            font-weight: 700;
+            margin-top: 10px;
+            margin-bottom: 5px;
+        }
 
-    .sub-title {
-        text-align: center;
-        font-size: 19px;
-        margin-bottom: 25px;
-        color: #555555;
-    }
+        .sub-title {
+            text-align: center;
+            font-size: 19px;
+            margin-bottom: 30px;
+            color: #555555;
+        }
 
-    .tool-card {
-        border: 1px solid #d9d9d9;
-        border-radius: 14px;
-        padding: 18px 18px 20px 18px;
-        background: #ffffff;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-        text-align: center;
-        margin-bottom: 20px;
-        min-height: 190px;
-    }
+        .tool-icon {
+            text-align: center;
+            font-size: 48px;
+            line-height: 1;
+            margin-bottom: 8px;
+        }
 
-    .tool-icon {
-        font-size: 42px;
-        line-height: 1.1;
-        margin-bottom: 8px;
-    }
+        .tool-title {
+            text-align: center;
+            font-size: 21px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
 
-    .tool-title {
-        font-size: 21px;
-        font-weight: 700;
-        margin-bottom: 7px;
-    }
+        .tool-description {
+            text-align: center;
+            font-size: 14px;
+            color: #555555;
+            min-height: 42px;
+            margin-bottom: 12px;
+        }
 
-    .tool-description {
-        font-size: 14px;
-        color: #555555;
-        min-height: 42px;
-        margin-bottom: 12px;
-    }
-
-    div.stButton > button,
-    div.stLinkButton > a {
-        width: 100%;
-        border-radius: 8px;
-        min-height: 42px;
-        font-weight: 600;
-    }
+        div.stButton > button,
+        div.stLinkButton > a {
+            width: 100%;
+            border-radius: 8px;
+            min-height: 42px;
+            font-weight: 600;
+        }
 
     </style>
     """,
@@ -170,12 +162,15 @@ def go_to(page_name):
 
 def get_github_settings():
     """Read GitHub settings from Streamlit Secrets."""
+
     try:
         token = st.secrets["github_token"]
+
         username = st.secrets.get(
             "github_username",
             GITHUB_OWNER,
         )
+
         repo = st.secrets.get(
             "github_repo",
             GITHUB_REPO,
@@ -265,12 +260,16 @@ def get_github_file(file_path):
     data = response.json()
 
     if data.get("encoding") == "base64":
+
         content = base64.b64decode(
             data["content"].replace("\n", "")
         ).decode("utf-8-sig")
 
     else:
-        download_url = data.get("download_url")
+
+        download_url = data.get(
+            "download_url"
+        )
 
         if not download_url:
             raise RuntimeError(
@@ -321,9 +320,13 @@ def upload_github_file(
     sha = None
 
     if existing_response.status_code == 200:
-        sha = existing_response.json().get("sha")
+
+        sha = existing_response.json().get(
+            "sha"
+        )
 
     elif existing_response.status_code != 404:
+
         raise RuntimeError(
             f"GitHub file path check failed "
             f"({existing_response.status_code}): "
@@ -351,6 +354,7 @@ def upload_github_file(
     )
 
     if response.status_code not in (200, 201):
+
         raise RuntimeError(
             f"GitHub upload failed "
             f"({response.status_code}): "
@@ -411,18 +415,24 @@ def update_sku_history(
     )
 
     if existing_content:
+
         try:
+
             history_df = pd.read_csv(
                 io.StringIO(existing_content),
                 dtype=str,
             )
+
         except Exception:
+
             history_df = pd.DataFrame()
 
     else:
+
         history_df = pd.DataFrame()
 
     if history_df.empty:
+
         history_df = pd.DataFrame(
             columns=[
                 "Date Submitted",
@@ -431,6 +441,7 @@ def update_sku_history(
         )
 
     if "Date Submitted" not in history_df.columns:
+
         history_df.insert(
             0,
             "Date Submitted",
@@ -438,6 +449,7 @@ def update_sku_history(
         )
 
     if "Load Ref" not in history_df.columns:
+
         history_df.insert(
             1,
             "Load Ref",
@@ -463,7 +475,9 @@ def update_sku_history(
 
     # Add newly encountered SKUs.
     for sku in sku_counts.keys():
+
         if sku not in history_df.columns:
+
             history_df[sku] = 0
 
     sku_columns = [
@@ -476,6 +490,7 @@ def update_sku_history(
     ]
 
     if sku_columns and not history_df.empty:
+
         history_df[sku_columns] = (
             history_df[sku_columns]
             .fillna(0)
@@ -502,6 +517,7 @@ def update_sku_history(
     }
 
     for sku in sku_columns:
+
         new_row[sku] = int(
             sku_counts.get(
                 sku,
@@ -518,6 +534,7 @@ def update_sku_history(
     )
 
     if sku_columns:
+
         history_df[sku_columns] = (
             history_df[sku_columns]
             .fillna(0)
@@ -546,6 +563,7 @@ def update_sku_history(
 # ============================================================
 
 def clean_filename(value):
+
     value = str(value).strip()
 
     value = re.sub(
@@ -561,6 +579,7 @@ def clean_filename(value):
 
 
 def is_summary_row(value):
+
     if pd.isna(value):
         return False
 
@@ -579,6 +598,7 @@ def is_summary_row(value):
 
 
 def is_explicit_na(value):
+
     if pd.isna(value):
         return False
 
@@ -594,16 +614,17 @@ def is_explicit_na(value):
 
 
 def read_wms_data(raw_text):
-    """Read pasted WMS data."""
 
     raw_text = raw_text.strip()
 
     if not raw_text:
+
         raise ValueError(
             "No WMS data was entered."
         )
 
     try:
+
         df = pd.read_csv(
             io.StringIO(raw_text),
             sep="\t",
@@ -614,6 +635,7 @@ def read_wms_data(raw_text):
             raise ValueError
 
     except Exception:
+
         df = pd.read_csv(
             io.StringIO(raw_text),
             sep=",",
@@ -636,21 +658,21 @@ def show_home():
 
     st.markdown(
         '<div class="main-title">'
-        "KP to Campeys"
-        "</div>",
+        'KP to Campeys'
+        '</div>',
         unsafe_allow_html=True,
     )
 
     st.markdown(
         '<div class="sub-title">'
-        "Campeys Operations Tools"
-        "</div>",
+        'Campeys Operations Tools'
+        '</div>',
         unsafe_allow_html=True,
     )
 
-    st.info(
-        "Select a tool below."
-    )
+    # ========================================================
+    # FIRST ROW
+    # ========================================================
 
     col1, col2, col3 = st.columns(3)
 
@@ -661,27 +683,22 @@ def show_home():
     with col1:
 
         st.markdown(
-            '<div class="tool-card">',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
             '<div class="tool-icon">📦</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-title">'
-            "KP to Campeys SSCC Sender"
-            "</div>",
+            'KP to Campeys SSCC Sender'
+            '</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-description">'
-            "Convert WMS data into the Campeys SSCC "
-            "CSV format and archive the load."
-            "</div>",
+            'Convert WMS data into the Campeys SSCC '
+            'CSV format and archive the load.'
+            '</div>',
             unsafe_allow_html=True,
         )
 
@@ -690,13 +707,9 @@ def show_home():
             key="open_sender",
             use_container_width=True,
         ):
+
             go_to("sender")
             st.rerun()
-
-        st.markdown(
-            "</div>",
-            unsafe_allow_html=True,
-        )
 
     # --------------------------------------------------------
     # LOAD HISTORY
@@ -705,27 +718,22 @@ def show_home():
     with col2:
 
         st.markdown(
-            '<div class="tool-card">',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
             '<div class="tool-icon">📊</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-title">'
-            "Load History"
-            "</div>",
+            'Load History'
+            '</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-description">'
-            "View historical SKU quantities submitted "
-            "for each Campeys load."
-            "</div>",
+            'View historical SKU quantities submitted '
+            'for each Campeys load.'
+            '</div>',
             unsafe_allow_html=True,
         )
 
@@ -734,13 +742,9 @@ def show_home():
             key="open_history",
             use_container_width=True,
         ):
+
             go_to("history")
             st.rerun()
-
-        st.markdown(
-            "</div>",
-            unsafe_allow_html=True,
-        )
 
     # --------------------------------------------------------
     # AUTOSTORE
@@ -749,26 +753,21 @@ def show_home():
     with col3:
 
         st.markdown(
-            '<div class="tool-card">',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
             '<div class="tool-icon">🏭</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-title">'
-            "AutoStore"
-            "</div>",
+            'AutoStore'
+            '</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-description">'
-            "Open the live AutoStore application."
-            "</div>",
+            'Open the live AutoStore application.'
+            '</div>',
             unsafe_allow_html=True,
         )
 
@@ -778,10 +777,14 @@ def show_home():
             use_container_width=True,
         )
 
-        st.markdown(
-            "</div>",
-            unsafe_allow_html=True,
-        )
+    # ========================================================
+    # SECOND ROW
+    # ========================================================
+
+    st.markdown(
+        "<br>",
+        unsafe_allow_html=True,
+    )
 
     col4, col5, col6 = st.columns(3)
 
@@ -792,27 +795,22 @@ def show_home():
     with col4:
 
         st.markdown(
-            '<div class="tool-card">',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
             '<div class="tool-icon">👥</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-title">'
-            "Campeys Contact List"
-            "</div>",
+            'Campeys Contact List'
+            '</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-description">'
-            "View the Campeys contact list stored "
-            "in the GitHub repository."
-            "</div>",
+            'View the Campeys contact list stored '
+            'in the GitHub repository.'
+            '</div>',
             unsafe_allow_html=True,
         )
 
@@ -821,13 +819,9 @@ def show_home():
             key="open_contacts",
             use_container_width=True,
         ):
+
             go_to("contacts")
             st.rerun()
-
-        st.markdown(
-            "</div>",
-            unsafe_allow_html=True,
-        )
 
     # --------------------------------------------------------
     # LOAD PLANNER
@@ -836,27 +830,22 @@ def show_home():
     with col5:
 
         st.markdown(
-            '<div class="tool-card">',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
             '<div class="tool-icon">📋</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-title">'
-            "Campeys Load Planner"
-            "</div>",
+            'Campeys Load Planner'
+            '</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-description">'
-            "Open the Campeys collection request "
-            "and load planner workbook."
-            "</div>",
+            'Open the Campeys collection request '
+            'and load planner workbook.'
+            '</div>',
             unsafe_allow_html=True,
         )
 
@@ -866,21 +855,11 @@ def show_home():
             use_container_width=True,
         )
 
-        st.markdown(
-            "</div>",
-            unsafe_allow_html=True,
-        )
-
     # --------------------------------------------------------
-    # EMPTY / FUTURE TOOL
+    # MORE TOOLS
     # --------------------------------------------------------
 
     with col6:
-
-        st.markdown(
-            '<div class="tool-card">',
-            unsafe_allow_html=True,
-        )
 
         st.markdown(
             '<div class="tool-icon">🔧</div>',
@@ -889,20 +868,15 @@ def show_home():
 
         st.markdown(
             '<div class="tool-title">'
-            "More Tools"
-            "</div>",
+            'More Tools'
+            '</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown(
             '<div class="tool-description">'
-            "Additional Campeys tools can be added here."
-            "</div>",
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            "</div>",
+            'Additional Campeys tools can be added here.'
+            '</div>',
             unsafe_allow_html=True,
         )
 
@@ -920,7 +894,9 @@ def show_history():
         args=("home",),
     )
 
-    st.title("📊 Load History")
+    st.title(
+        "📊 Load History"
+    )
 
     st.caption(
         "SKU quantities submitted for each processed load."
@@ -933,13 +909,17 @@ def show_history():
         )
 
         if not history_content:
+
             st.info(
                 "No load history has been created yet."
             )
+
             return
 
         history_df = pd.read_csv(
-            io.StringIO(history_content)
+            io.StringIO(
+                history_content
+            )
         )
 
         st.dataframe(
@@ -978,7 +958,9 @@ def show_contacts():
         args=("home",),
     )
 
-    st.title("👥 Campeys Contact List")
+    st.title(
+        "👥 Campeys Contact List"
+    )
 
     st.caption(
         "Contact information retrieved from the "
@@ -1020,8 +1002,10 @@ def show_contacts():
 
         if contact_metadata:
 
-            download_url = contact_metadata.get(
-                "download_url"
+            download_url = (
+                contact_metadata.get(
+                    "download_url"
+                )
             )
 
             if download_url:
