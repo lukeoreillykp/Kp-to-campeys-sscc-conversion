@@ -153,8 +153,8 @@ if st.button("Process & Email CSV", type="primary"):
                     }
                     
                     response1 = requests.post(url, json=payload1, headers=headers)
-                    # Fixed syntax here: checking for success statuses safely
-                    if response1.status_code in:
+                    # Verified clean API success condition checks
+                    if response1.status_code in [200, 201, 202]:
                         st.success("📧 Master CSV dispatched successfully via Web API!")
                     else:
                         st.error(f"Failed sending CSV email. API Error: {response1.text}")
@@ -170,8 +170,8 @@ if st.button("Process & Email CSV", type="primary"):
                     }
                     
                     response2 = requests.post(url, json=payload2, headers=headers)
-                    # Fixed syntax here as well
-                    if response2.status_code in:
+                    # Verified clean API success condition checks
+                    if response2.status_code in [200, 201, 202]:
                         st.success("📊 Summary matrix tables delivered directly to Luke via Web API!")
                     else:
                         st.error(f"Failed sending Summary email. API Error: {response2.text}")
