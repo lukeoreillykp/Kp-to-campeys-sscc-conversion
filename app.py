@@ -12,21 +12,7 @@ import base64
 st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
 st.title("📦 KP to Campeys SSCC Sender")
 
-# 1. Inputs for the additional information fields
-st.subheader("1. Additional Information")
-col1, col2 = st.columns(2)
-with col1:
-    extra_info_1 = st.text_input("Enter Load Ref (Names your file and repeats in Load Ref column):")
-with col2:
-    jde_order_ref = st.text_input("Enter JDE Order Ref (Populates the new Movement column):")
-
-# 2. Raw Text Paste Area
-st.subheader("2. Paste WMS Data Below")
-st.caption("Include your header row! Copy the entire grid from your WMS (Ctrl+A -> Ctrl+C) and paste it below (Ctrl+V). Column order does not matter.")
-
-pasted_text = st.text_area("Paste data here:", height=250, placeholder="SSCC Code\tItem Code\tDescription\tUnits...")
-
-# Expected 9 WMS columns from your grid
+# Expected 9 WMS columns from your grid layout
 EXPECTED_WMS_COLUMNS = [
     "SSCC Code", 
     "Item Code", 
@@ -54,6 +40,53 @@ def contains_explicit_na(val):
         return False
     clean_str = re.sub(r'[\s#\/\\\-_.]', '', str(val)).lower()
     return "na" in clean_str
+
+# Isolated background function for archiving files to GitHub securely
+def upload_to_github_archive(csv_bytes, csv_filename):
+    try:
+        TOKEN = st.secrets["github_token"]
+        USERNAME = st.secrets["github_username"]
+        REPO = st.secrets["github_repo"]
+        
+        github_url = f"https://github.com{USERNAME}/{REPO}/contents/saved_loads/{csv_filename}"
+        
+        headers = {
+            "Authorization": f"token {TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        b64_content = base64.b64encode(csv_bytes).decode('utf-8')
+        res_check = requests.get(github_url, headers=headers)
+        
+        payload = {
+            "message": f"Archive automated reformat entry: {csv_filename}",
+            "content": b64_content
+        }
+        
+        if res_check.status_code == 200:
+            payload["sha"] = res_check.json()["sha"]
+            
+        upload_res = requests.put(github_url, json=payload, headers=headers)
+        if upload_res.status_code == 201 or upload_res.status_code == 200:
+            st.info(f"📂 Cloud Archive: '{csv_filename}' successfully saved directly to your GitHub repository.")
+        else:
+            st.warning(f"⚠️ App processed data but failed archiving to GitHub repository. Info: {upload_res.text}")
+    except Exception as g_err:
+        st.warning(f"⚠️ GitHub integration configuration error: {g_err}")
+
+# 1. Inputs for the additional information fields
+st.subheader("1. Additional Information")
+col1, col2 = st.columns(2)
+with col1:
+    extra_info_1 = st.text_input("Enter Load Ref (Names your file and repeats in Load Ref column):")
+with col2:
+    jde_order_ref = st.text_input("Enter JDE Order Ref (Populates the new Movement column):")
+
+# 2. Raw Text Paste Area
+st.subheader("2. Paste WMS Data Below")
+st.caption("Include your header row! Copy the entire grid from your WMS (Ctrl+A -> Ctrl+C) and paste it below (Ctrl+V). Column order does not matter.")
+
+pasted_text = st.text_area("Paste data here:", height=250, placeholder="SSCC Code\tItem Code\tDescription\tUnits...")
 
 # 3. Process & Display Logic
 if st.button("Process & Generate Files", type="primary"):
@@ -116,39 +149,8 @@ if st.button("Process & Generate Files", type="primary"):
                     csv_data = output_df.to_csv(index=False)
                     csv_bytes = csv_data.encode('utf-8')
                     
-                    # --- AUTOMATED GITHUB REPOSITORY UPLOAD LAYER ---
-                    try:
-                        TOKEN = st.secrets["github_token"]
-                        USERNAME = st.secrets["github_username"]
-                        REPO = st.secrets["github_repo"]
-                        
-                        # GitHub API Endpoint to save files inside a folder named 'saved_loads'
-                        github_url = f"https://github.com{USERNAME}/{REPO}/contents/saved_loads/{csv_filename}"
-                        
-                        headers = {
-                            "Authorization": f"token {TOKEN}",
-                            "Accept": "application/vnd.github.v3+json"
-                        }
-                        
-                        # Encode CSV payload to base64 for API transmission
-                        b64_content = base64.b64encode(csv_bytes).decode('utf-8')
-                        
-                        # Check if file already exists to handle updates, otherwise create fresh entry
-                        res_check = requests.get(github_url, headers=headers)
-                        payload = {
-                            "message": f"Archive automated reformat entry: {csv_filename}",
-                            "content": b64_content
-                        }
-                        if res_check.status_code == 200:
-                            payload["sha"] = res_check.json()["sha"]
-                            
-                        upload_res = requests.put(github_url, json=payload, headers=headers)
-                        if upload_res.status_code == 201 or upload_res.status_code == 200:
-                            st.info(f"📂 Cloud Archive: '{csv_filename}' successfully saved directly to your GitHub repository.")
-                        else:
-                            st.warning(f"⚠️ App processed data but failed archiving to GitHub repository. Info: {upload_res.text}")
-                    except Exception as g_err:
-                        st.warning(f"⚠️ GitHub integration config check skipped or failed: {g_err}")
+                    # --- TRIGGER INDEPENDENT GITHUB ARCHIVE UPLOAD ---
+                    upload_to_github_archive(csv_bytes, csv_filename)
                     
                     # --- WEB ACTION DASHBOARD ---
                     st.subheader("3. Export Processed Data")
@@ -156,7 +158,6 @@ if st.button("Process & Generate Files", type="primary"):
                     btn_col1, btn_col2, btn_col3 = st.columns(3)
                     
                     with btn_col1:
-                        # Master file browser download button
                         st.download_button(
                             label="📥 1. Download CSV Locally",
                             data=csv_bytes,
@@ -167,7 +168,6 @@ if st.button("Process & Generate Files", type="primary"):
                         )
                     
                     with btn_col2:
-                        # Construct safe mailto browser trigger
                         email_recipient = "Luke.oreilly@kpsnacks.com"
                         email_subject = f"{extra_info_1} Pallet Count by SKU"
                         email_body = f"Hi Luke,\n\nHere is the pallet count breakdown summarized by unique SKU for Load Ref: {extra_info_1}\n\n{clean_text_summary}\n\nRegards,\nWMS Automated Conversion Engine"
@@ -175,7 +175,6 @@ if st.button("Process & Generate Files", type="primary"):
                         st.link_button("📧 2. Open Pre-Filled Email", url=mailto_link, use_container_width=True)
                         
                     with btn_col3:
-                        # Dynamic button that routes directly to your online repository's saved folder layout
                         repo_view_url = f"https://github.com{st.secrets['github_username']}/{st.secrets['github_repo']}/tree/main/saved_loads"
                         st.link_button("📋 3. Access Repository Archive", url=repo_view_url, use_container_width=True)
                     
@@ -183,7 +182,6 @@ if st.button("Process & Generate Files", type="primary"):
                     st.write("---")
                     st.subheader(f"📊 {extra_info_1} Pallet Count by SKU")
                     st.dataframe(pd.DataFrame([sku_counts.values], columns=sku_counts.index), use_container_width=True)
-                    
-                    # Show the absolute converted output preview below everything
-                    st.write("---")
-                    st.subheader("🔍 Converted Master Data Preview")
+                        
+        except Exception as e:
+            st.error(f"An error occurred during file building: {e}")
