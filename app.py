@@ -96,7 +96,7 @@ if st.button("Process & Generate Files", type="primary"):
                     
                     # --- CALCULATE UNIQUE SKU COUNTS FOR SUMMARY PALLETS ---
                     sku_counts = df_filtered["Item Code"].astype(str).str.strip().value_counts()
-                    text_summary = "\n".join([f"• SKU: {sku} -> Count: {count}" for sku, count in sku_counts.items()])
+                    clean_text_summary = "\n".join([f"• SKU: {sku} -> Count: {count}" for sku, count in sku_counts.items()])
                     
                     # Inject metadata headers into main data sheet
                     df_filtered["Load Ref"] = extra_info_1
@@ -169,7 +169,7 @@ if st.button("Process & Generate Files", type="primary"):
                         # Construct safe mailto browser trigger
                         email_recipient = "Luke.oreilly@kpsnacks.com"
                         email_subject = f"{extra_info_1} Pallet Count by SKU"
-                        email_body = f"Hi Luke,\n\nHere is the pallet count breakdown summarized by unique SKU for Load Ref: {extra_info_1}\n\n{text_summary}\n\nRegards,\nWMS Automated Conversion Engine"
+                        email_body = f"Hi Luke,\n\nHere is the pallet count breakdown summarized by unique SKU for Load Ref: {extra_info_1}\n\n{clean_text_summary}\n\nRegards,\nWMS Automated Conversion Engine"
                         mailto_link = f"mailto:{email_recipient}?subject={urllib.parse.quote(email_subject)}&body={urllib.parse.quote(email_body)}"
                         st.link_button("📧 2. Open Pre-Filled Email", url=mailto_link, use_container_width=True)
                         
