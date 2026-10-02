@@ -14,9 +14,13 @@ import io
 st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
 st.title("📦 KP to Campeys SSCC Sender")
 
-# 1. Inputs for the 1 piece of additional information
+# 1. Inputs for the additional information fields
 st.subheader("1. Additional Information")
-extra_info_1 = st.text_input("Enter Load Ref (This will name your file and repeat in each row):")
+col1, col2 = st.columns(2)
+with col1:
+    extra_info_1 = st.text_input("Enter Load Ref (Names your file and repeats in Load Ref column):")
+with col2:
+    jde_order_ref = st.text_input("Enter JDE Order Ref (Repeats across the Movement column):")
 
 # Email Input Field
 st.subheader("2. Recipient Email")
@@ -46,8 +50,8 @@ EXPECTED_WMS_COLUMNS = [
 if st.button("Process & Email CSV", type="primary"):
     if not pasted_text.strip():
         st.error("Please paste some data into the text box first.")
-    elif not extra_info_1 or not recipient_email:
-        st.warning("Please fill out the Load Ref field and the recipient email.")
+    elif not extra_info_1 or not jde_order_ref or not recipient_email:
+        st.warning("Please fill out the Load Ref, JDE Order Ref, and the recipient email.")
     else:
         try:
             # Detect whether data is tab-separated (from spreadsheet grids) or comma-separated
@@ -82,9 +86,12 @@ if st.button("Process & Email CSV", type="primary"):
                     # Formatted to your exact preference: DD/mm/yyyy hh:mm
                     current_time = datetime.now(local_tz).strftime("%d/%m/%Y %H:%M")
                     
-                    # Inject temporary columns with your exact required output header names
+                    # Inject formatting updates
                     df_filtered["Load Ref"] = extra_info_1
                     df_filtered["Date"] = current_time
+                    
+                    # Overwrite the original Movement data with the JDE Order Ref input across all rows
+                    df_filtered["Movement"] = jde_order_ref
                     
                     # --- FINAL OUTPUT LAYOUT SPECIFICATION ---
                     # Forces the final CSV into your exact target structural layout
@@ -97,7 +104,7 @@ if st.button("Process & Email CSV", type="primary"):
                         "Units",
                         "Rotation Date",
                         "Batch",
-                        "Movement",
+                        "Movement",            # Now filled with the JDE Order Ref data
                         "Status",
                         "Positive Release",
                         "Catch Weight To Remove"
