@@ -9,7 +9,6 @@ import re
 from datetime import datetime
 import pytz
 import io
-import socket
 
 # Form Title Configuration
 st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
@@ -129,13 +128,9 @@ if st.button("Process & Email CSV", type="primary"):
             SENDER_EMAIL = st.secrets["smtp"]["sender"]
             SENDER_PASSWORD = st.secrets["smtp"]["password"]
             
-            # Direct network wrapper setup for handling IP strings safely over SSL
-            # By overriding server hostname checks, Python connects directly to Google's hardware
-            context = smtplib.ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = smtplib.ssl.CERT_NONE
-            
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
+            # Open standard secure connection
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls()
                 server.login(SENDER_EMAIL, SENDER_PASSWORD)
                 
                 # Email 1: Master CSV Document
