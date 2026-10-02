@@ -1,11 +1,14 @@
 import streamlit as st
 import pandas as pd
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 import re
 from datetime import datetime
 import pytz
 import io
-import requests
-import base64
 
 # Form Title Configuration
 st.set_page_config(page_title="KP to Campeys SSCC Sender", layout="wide")
@@ -127,54 +130,43 @@ if st.button("Process & Email CSV", type="primary"):
                     # Save to temporary CSV string
                     csv_data = output_df.to_csv(index=False)
                     
-                    # Convert CSV data to base64 encoding for API transport
-                    b64_csv = base64.b64encode(csv_data.encode('utf-8')).decode('utf-8')
+                    # Fetch background secrets tokens securely
+                    SMTP_SERVER = st.secrets["smtp"]["server"]
+                    SMTP_PORT = int(st.secrets["smtp"]["port"])
+                    SENDER_EMAIL = st.secrets["smtp"]["sender"]
+                    SENDER_PASSWORD = st.secrets["smtp"]["password"]
                     
-                    # Fetch API Key from Secrets Dashboard
-                    API_KEY = st.secrets["brevo_api_key"]
-                    url = "https://brevo.com"
-                    
-                    # Updated headers containing custom user-agent masking parameters
-                    headers = {
-                        "accept": "application/json",
-                        "content-type": "application/json",
-                        "api-key": API_KEY,
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                    }
-                    
-                    # --- WEB DISPATCH 1: MASTER DATA CSV ---
-                    payload1 = {
-                        "sender": {"email": "kp.ponte.csv@gmail.com", "name": "WMS Reformat Engine"},
-                        "to": [{"email": recipient_email}],
-                        "subject": f"Campeys SSCC Report - {extra_info_1}",
-                        "textContent": f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.",
-                        "attachments": [{
-                            "content": b64_csv,
-                            "name": csv_filename
-                        }]
-                    }
-                    
-                    response1 = requests.post(url, json=payload1, headers=headers)
-                    if response1.status_code == 201 or response1.status_code == 200:
-                        st.success("📧 Master CSV dispatched successfully via Web API!")
-                    else:
-                        st.error(f"Failed sending CSV email. API Error: {response1.status_code} - Details: {response1.text}")
+                    # Connect directly via unblocked native SMTP_SSL (Port 465)
+                    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+                        server.login(SENDER_EMAIL, SENDER_PASSWORD)
                         
-                    # --- WEB DISPATCH 2: SKU PALLET BREAKDOWN TABLE ---
-                    email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
-                    
-                    payload2 = {
-                        "sender": {"email": "kp.ponte.csv@gmail.com", "name": "WMS Reformat Engine"},
-                        "to": [{"email": "Luke.oreilly@kpsnacks.com"}],
-                        "subject": f"{extra_info_1} Pallet Count by SKU",
-                        "htmlContent": email_body
-                    }
-                    
-                    response2 = requests.post(url, json=payload2, headers=headers)
-                    if response2.status_code == 201 or response2.status_code == 200:
-                        st.success("📊 Summary matrix tables delivered directly to Luke via Web API!")
-                    else:
-                        st.error(f"Failed sending Summary email. API Error: {response2.status_code} - Details: {response2.text}")
+                        # --- EMAIL 1: MASTER DATA CSV DISPATCH ---
+                        msg1 = MIMEMultipart()
+                        msg1['From'] = SENDER_EMAIL
+                        msg1['To'] = recipient_email
+                        msg1['Subject'] = f"Campeys SSCC Report - {extra_info_1}"
+                        msg1.attach(MIMEText(f"Please find attached the reformatted KP to Campeys SSCC data for Load Ref: {extra_info_1}.", 'plain'))
+                        
+                        part = MIMEBase('application', 'octet-stream')
+                        part.set_payload(csv_data.encode('utf-8'))
+                        encoders.encode_base64(part)
+                        part.add_header('Content-Disposition', f"attachment; filename={csv_filename}")
+                        msg1.attach(part)
+                        
+                        server.sendmail(SENDER_EMAIL, recipient_email, msg1.as_string())
+                        st.success(f"📧 Master CSV file dispatched to {recipient_email}!")
+                        
+                        # --- EMAIL 2: HORIZONTAL SUMMARY SKU PALLET TABLE ---
+                        msg2 = MIMEMultipart()
+                        msg2['From'] = SENDER_EMAIL
+                        msg2['To'] = "Luke.oreilly@kpsnacks.com"
+                        msg2['Subject'] = f"{extra_info_1} Pallet Count by SKU"
+                        
+                        email_body = "<html><body><p>Hi Luke,</p><p>Here is the pallet count breakdown summarized by unique SKU for <strong>Load Ref: " + extra_info_1 + "</strong>:</p>" + html_table_string + "<p><br>Regards,<br>WMS Automated Conversion Engine</p></body></html>"
+                        msg2.attach(MIMEText(email_body, 'html'))
+                        
+                        server.sendmail(SENDER_EMAIL, "Luke.oreilly@kpsnacks.com", msg2.as_string())
+                        st.success("📊 SKU Summary table email successfully sent directly to Luke!")
                         
         except Exception as e:
-            st.error(f"An error occurred during API delivery: {e}")
+            st.error(f"An error occurred during secure delivery: {e}")
