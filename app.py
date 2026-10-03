@@ -4,10 +4,10 @@ import re
 import urllib.parse
 from datetime import datetime
 import smtplib
+
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
-from email import encoders
 
 import pandas as pd
 import pytz
@@ -57,7 +57,9 @@ CONTACT_LIST_PATH = "campeys contact list.txt"
 # Default email addresses
 EMAIL_TO = "kpsnacks@campeys.co.uk"
 
-LUKE_EMAIL = "Luke.oreilly@kpsnacks.com"
+# Lowercase canonical email address
+LUKE_EMAIL = "luke.oreilly@kpsnacks.com"
+
 GRAYSON_EMAIL = "grayson.swan@kpsnacks.com"
 
 EMAIL_CC = [
@@ -215,6 +217,10 @@ def send_email_with_smtp(
     """
     Send an email with CSV attachment using Gmail SMTP.
 
+    The CSV attachment uses MIMEApplication rather than
+    manually constructing MIMEBase. This produces a standard
+    application/csv MIME attachment.
+
     Returns:
         (True, message) on success
         (False, error_message) on failure
@@ -226,13 +232,60 @@ def send_email_with_smtp(
         if not gmail_password:
             return (
                 False,
-                "Gmail password/app password is not configured in Streamlit Secrets.",
+                "Gmail password/app password is not configured "
+                "in Streamlit Secrets.",
             )
 
         if not to_recipients and not cc_recipients:
             return (
                 False,
                 "No email recipients were selected.",
+            )
+
+        # ----------------------------------------------------
+        # Clean and de-duplicate recipients
+        # ----------------------------------------------------
+
+        clean_to = []
+        clean_cc = []
+
+        for recipient in to_recipients:
+            recipient = str(recipient).strip()
+
+            if (
+                recipient
+                and recipient.lower()
+                not in [
+                    existing.lower()
+                    for existing in clean_to
+                ]
+            ):
+                clean_to.append(recipient)
+
+        for recipient in cc_recipients:
+            recipient = str(recipient).strip()
+
+            if not recipient:
+                continue
+
+            # Do not add a CC address if it is already a To
+            # address.
+            all_existing = [
+                existing.lower()
+                for existing in (
+                    clean_to + clean_cc
+                )
+            ]
+
+            if recipient.lower() not in all_existing:
+                clean_cc.append(recipient)
+
+        all_recipients = clean_to + clean_cc
+
+        if not all_recipients:
+            return (
+                False,
+                "No valid email recipients were selected.",
             )
 
         # ----------------------------------------------------
@@ -243,11 +296,11 @@ def send_email_with_smtp(
 
         msg["From"] = GMAIL_ADDRESS
 
-        if to_recipients:
-            msg["To"] = ", ".join(to_recipients)
+        if clean_to:
+            msg["To"] = ", ".join(clean_to)
 
-        if cc_recipients:
-            msg["Cc"] = ", ".join(cc_recipients)
+        if clean_cc:
+            msg["Cc"] = ", ".join(clean_cc)
 
         msg["Subject"] = subject
 
@@ -265,18 +318,19 @@ def send_email_with_smtp(
 
         # ----------------------------------------------------
         # CSV attachment
+        #
+        # IMPORTANT:
+        # Use MIMEApplication rather than MIMEBase.
         # ----------------------------------------------------
 
-        attachment = MIMEBase(
-            "application",
-            "octet-stream",
+        csv_bytes = csv_content.encode(
+            "utf-8-sig"
         )
 
-        attachment.set_payload(
-            csv_content.encode("utf-8-sig")
+        attachment = MIMEApplication(
+            csv_bytes,
+            _subtype="csv",
         )
-
-        encoders.encode_base64(attachment)
 
         attachment.add_header(
             "Content-Disposition",
@@ -285,26 +339,6 @@ def send_email_with_smtp(
         )
 
         msg.attach(attachment)
-
-        # ----------------------------------------------------
-        # All recipients
-        # ----------------------------------------------------
-
-        all_recipients = []
-
-        for recipient in to_recipients:
-            if recipient and recipient not in all_recipients:
-                all_recipients.append(recipient)
-
-        for recipient in cc_recipients:
-            if recipient and recipient not in all_recipients:
-                all_recipients.append(recipient)
-
-        if not all_recipients:
-            return (
-                False,
-                "No valid email recipients were selected.",
-            )
 
         # ----------------------------------------------------
         # Connect to Gmail
@@ -337,41 +371,70 @@ def send_email_with_smtp(
                 msg.as_string(),
             )
 
-            # ------------------------------------------------
-            # Gmail explicitly refused recipient(s)
-            # ------------------------------------------------
+        # ----------------------------------------------------
+        # Gmail explicitly refused recipient(s)
+        # ----------------------------------------------------
 
-            if refused:
+        if refused:
 
-                refused_details = []
+            refused_lower = {
+                str(recipient).lower()
+                for recipient in refused.keys()
+            }
 
-                for recipient, error in refused.items():
+            accepted = [
+                recipient
+                for recipient in all_recipients
+                if recipient.lower()
+                not in refused_lower
+            ]
 
-                    if isinstance(error, bytes):
-                        error = error.decode(
-                            "utf-8",
-                            errors="replace",
-                        )
+            refused_details = []
 
-                    refused_details.append(
-                        f"{recipient}: {error}"
+            for recipient, error in refused.items():
+
+                if isinstance(error, bytes):
+                    error = error.decode(
+                        "utf-8",
+                        errors="replace",
                     )
 
-                return (
-                    False,
-                    "Gmail refused one or more recipients:\n"
-                    + "\n".join(refused_details),
+                refused_details.append(
+                    f"{recipient}: {error}"
                 )
 
+            result_lines = []
+
+            if accepted:
+                result_lines.append(
+                    "Gmail accepted the email for: "
+                    + ", ".join(accepted)
+                )
+
+            if refused_details:
+                result_lines.append(
+                    "Gmail refused:"
+                )
+
+                result_lines.extend(
+                    refused_details
+                )
+
+            return (
+                False,
+                "\n".join(result_lines),
+            )
+
         # ----------------------------------------------------
-        # SMTP accepted the message
+        # SMTP accepted all recipients
         # ----------------------------------------------------
 
         return (
             True,
             (
-                "Gmail accepted the email for delivery "
-                f"to {len(all_recipients)} recipient(s)."
+                "Gmail accepted the email for delivery to: "
+                + ", ".join(all_recipients)
+                + "."
             ),
         )
 
@@ -381,17 +444,34 @@ def send_email_with_smtp(
             False,
             (
                 "Gmail authentication failed. "
-                "Check that gmail_password in Streamlit Secrets "
-                "is a valid Google App Password."
+                "Check that gmail_password in Streamlit "
+                "Secrets is a valid Google App Password."
                 f"\n\nSMTP error: {exc}"
             ),
         )
 
     except smtplib.SMTPRecipientsRefused as exc:
 
+        refused_details = []
+
+        for recipient, error in exc.recipients.items():
+
+            if isinstance(error, bytes):
+                error = error.decode(
+                    "utf-8",
+                    errors="replace",
+                )
+
+            refused_details.append(
+                f"{recipient}: {error}"
+            )
+
         return (
             False,
-            f"Gmail refused the recipients: {exc}",
+            (
+                "Gmail refused the following recipients:\n"
+                + "\n".join(refused_details)
+            ),
         )
 
     except smtplib.SMTPException as exc:
@@ -405,7 +485,10 @@ def send_email_with_smtp(
 
         return (
             False,
-            f"Unexpected email error: {type(exc).__name__}: {exc}",
+            (
+                "Unexpected email error: "
+                f"{type(exc).__name__}: {exc}"
+            ),
         )
 
 
@@ -596,7 +679,8 @@ def find_saved_load_file_for_load_ref(
 
     if (
         not raw_load_ref
-        or raw_load_ref.lower() in ["nan", "none"]
+        or raw_load_ref.lower()
+        in ["nan", "none"]
     ):
         return None
 
@@ -1042,7 +1126,9 @@ def extract_historic_csv_data(
     # Clean historic data
     # --------------------------------------------------------
 
-    df = df.dropna(how="all").copy()
+    df = df.dropna(
+        how="all"
+    ).copy()
 
     for column in df.columns:
 
@@ -1054,9 +1140,6 @@ def extract_historic_csv_data(
         )
 
     # Only retain rows with a genuine Item Code.
-    # This removes blank/NA/summary rows even if
-    # another column contains a total quantity.
-
     item_valid_mask = df[
         "Item Code"
     ].apply(
@@ -1422,12 +1505,10 @@ def is_valid_wms_load_row(row):
     - a genuine SSCC Code
     - a genuine Item Code
 
-    This deliberately does not require every other
-    column to be populated because optional fields
-    can legitimately be blank.
+    Optional columns may be blank.
 
     Rows containing Total/Subtotal/Summary in the
-    identifying fields are also rejected.
+    identifying fields are rejected.
     """
 
     sscc = row.get(
@@ -2736,7 +2817,6 @@ def show_sender():
                 .dropna(how="all")
             )
 
-            # Strip whitespace from text cells
             for column in df.columns:
 
                 df[column] = df[column].apply(
@@ -2747,20 +2827,8 @@ def show_sender():
                 )
 
             # ------------------------------------------------
-            # IMPORTANT:
-            #
-            # Only retain rows that contain both a valid
-            # SSCC Code and a valid Item Code.
-            #
-            # This removes final WMS summary rows such as:
-            #
-            # SSCC Code = NA
-            # Item Code = NA
-            # Units = 1234
-            #
-            # The entire row is discarded rather than
-            # accidentally creating a Campeys row with
-            # blank cells and a total quantity.
+            # Only retain rows containing both a valid
+            # SSCC Code and Item Code.
             # ------------------------------------------------
 
             valid_row_mask = df.apply(
@@ -2896,12 +2964,6 @@ def show_sender():
 
             # ------------------------------------------------
             # Upload CSV to GitHub
-            #
-            # This still happens in the background so the
-            # Load History screen can access archived loads.
-            #
-            # The GitHub links are deliberately NOT displayed
-            # on the conversion results page.
             # ------------------------------------------------
 
             with st.spinner(
@@ -2946,8 +3008,6 @@ def show_sender():
                 load_ref.strip()
             )
 
-            # Store the complete converted dataframe
-            # so it can be displayed after processing.
             st.session_state.output_df = (
                 output_df.copy()
             )
@@ -2956,8 +3016,6 @@ def show_sender():
                 True
             )
 
-            # Keep these internally for archiving/history.
-            # They are NOT displayed on the conversion page.
             st.session_state.github_result = (
                 github_result
             )
@@ -2971,8 +3029,6 @@ def show_sender():
                 "updated successfully."
             )
 
-            # Rerun so the processed results are displayed
-            # cleanly from the saved session state.
             st.rerun()
 
         except Exception as exc:
@@ -3074,9 +3130,6 @@ def show_sender():
 
         # ----------------------------------------------------
         # Download CSV
-        #
-        # This is the only CSV download shown on the
-        # conversion results page.
         # ----------------------------------------------------
 
         st.subheader(
@@ -3135,7 +3188,7 @@ def show_sender():
             )
 
             send_to_luke = st.checkbox(
-                "Luke Oreilly (Luke.oreilly@kpsnacks.com)",
+                "Luke Oreilly (luke.oreilly@kpsnacks.com)",
                 value=True,
                 key="send_to_luke",
             )
@@ -3161,14 +3214,12 @@ def show_sender():
         to_recipients = []
         cc_recipients = []
 
-        # Main Campeys address goes in To
         if send_to_kpsnacks:
 
             to_recipients.append(
                 EMAIL_TO
             )
 
-        # The other recipients go into CC
         if send_to_luke:
 
             cc_recipients.append(
@@ -3181,7 +3232,6 @@ def show_sender():
                 GRAYSON_EMAIL
             )
 
-        # Gmail test address
         if send_to_gmail:
 
             cc_recipients.append(
@@ -3273,10 +3323,10 @@ def show_sender():
                     )
 
                     st.caption(
-                        "If a recipient does not receive "
-                        "the email, check their Junk/Spam "
-                        "folder and their organisation's "
-                        "Microsoft 365 quarantine/filtering."
+                        "Gmail has accepted the message. "
+                        "If a recipient does not receive it, "
+                        "check Junk/Spam and their organisation's "
+                        "Microsoft 365 quarantine or mail filtering."
                     )
 
                 else:
