@@ -54,12 +54,18 @@ GITHUB_FOLDER = "saved_loads"
 SKU_HISTORY_PATH = "sku_counts_history.csv"
 CONTACT_LIST_PATH = "campeys contact list.txt"
 
+# Default email addresses
 EMAIL_TO = "kpsnacks@campeys.co.uk"
+
+LUKE_EMAIL = "Luke.oreilly@kpsnacks.com"
+GRAYSON_EMAIL = "grayson.swan@kpsnacks.com"
+
 EMAIL_CC = [
-    "Luke.oreilly@kpsnacks.com",
-    "grayson.swan@kpsnacks.com",
+    LUKE_EMAIL,
+    GRAYSON_EMAIL,
 ]
 
+# Gmail account used to send the emails
 GMAIL_ADDRESS = "kp.ponte.csv@gmail.com"
 
 AUTOSTORE_URL = "https://autostore-live.snacks.local/app"
@@ -173,6 +179,7 @@ if "load_ref" not in st.session_state:
 
 def go_to(page_name):
     st.session_state.page = page_name
+
     if page_name != "sender":
         st.session_state.process_complete = False
         st.session_state.csv_text = ""
@@ -185,44 +192,209 @@ def go_to(page_name):
 # GMAIL SMTP FUNCTIONS
 # ============================================================
 
-def send_email_with_smtp(recipients, subject, body, csv_content, csv_filename):
-    """Send email with CSV attachment using Gmail SMTP."""
+def send_email_with_smtp(
+    to_recipients,
+    cc_recipients,
+    subject,
+    body,
+    csv_content,
+    csv_filename,
+):
+    """
+    Send an email with CSV attachment using Gmail SMTP.
+
+    Returns:
+        (True, message) on success
+        (False, error_message) on failure
+    """
+
     try:
         gmail_password = st.secrets.get("gmail_password")
+
         if not gmail_password:
-            st.error(
-                "❌ Gmail password not configured in Streamlit Secrets. "
-                "Add 'gmail_password' to your secrets."
+            return (
+                False,
+                "Gmail password/app password is not configured in Streamlit Secrets.",
             )
-            return False
+
+        if not to_recipients and not cc_recipients:
+            return (
+                False,
+                "No email recipients were selected.",
+            )
+
+        # ----------------------------------------------------
+        # Create email
+        # ----------------------------------------------------
 
         msg = MIMEMultipart()
+
         msg["From"] = GMAIL_ADDRESS
-        msg["To"] = ", ".join(recipients)
+
+        if to_recipients:
+            msg["To"] = ", ".join(to_recipients)
+
+        if cc_recipients:
+            msg["Cc"] = ", ".join(cc_recipients)
+
         msg["Subject"] = subject
 
-        msg.attach(MIMEText(body, "plain"))
+        # ----------------------------------------------------
+        # Email body
+        # ----------------------------------------------------
 
-        attachment = MIMEBase("application", "octet-stream")
-        attachment.set_payload(csv_content.encode("utf-8-sig"))
+        msg.attach(
+            MIMEText(
+                body,
+                "plain",
+                "utf-8",
+            )
+        )
+
+        # ----------------------------------------------------
+        # CSV attachment
+        # ----------------------------------------------------
+
+        attachment = MIMEBase(
+            "application",
+            "octet-stream",
+        )
+
+        attachment.set_payload(
+            csv_content.encode("utf-8-sig")
+        )
+
         encoders.encode_base64(attachment)
+
         attachment.add_header(
             "Content-Disposition",
-            f"attachment; filename= {csv_filename}",
+            "attachment",
+            filename=csv_filename,
         )
+
         msg.attach(attachment)
 
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(GMAIL_ADDRESS, gmail_password)
-        server.send_message(msg)
-        server.quit()
+        # ----------------------------------------------------
+        # All recipients
+        # ----------------------------------------------------
 
-        return True
+        all_recipients = []
+
+        for recipient in to_recipients:
+            if recipient and recipient not in all_recipients:
+                all_recipients.append(recipient)
+
+        for recipient in cc_recipients:
+            if recipient and recipient not in all_recipients:
+                all_recipients.append(recipient)
+
+        if not all_recipients:
+            return (
+                False,
+                "No valid email recipients were selected.",
+            )
+
+        # ----------------------------------------------------
+        # Connect to Gmail
+        # ----------------------------------------------------
+
+        with smtplib.SMTP(
+            "smtp.gmail.com",
+            587,
+            timeout=30,
+        ) as server:
+
+            server.ehlo()
+
+            server.starttls()
+
+            server.ehlo()
+
+            server.login(
+                GMAIL_ADDRESS,
+                gmail_password,
+            )
+
+            # ------------------------------------------------
+            # Send message
+            # ------------------------------------------------
+
+            refused = server.sendmail(
+                GMAIL_ADDRESS,
+                all_recipients,
+                msg.as_string(),
+            )
+
+            # ------------------------------------------------
+            # Gmail explicitly refused recipient(s)
+            # ------------------------------------------------
+
+            if refused:
+
+                refused_details = []
+
+                for recipient, error in refused.items():
+
+                    if isinstance(error, bytes):
+                        error = error.decode(
+                            "utf-8",
+                            errors="replace",
+                        )
+
+                    refused_details.append(
+                        f"{recipient}: {error}"
+                    )
+
+                return (
+                    False,
+                    "Gmail refused one or more recipients:\n"
+                    + "\n".join(refused_details),
+                )
+
+        # ----------------------------------------------------
+        # SMTP accepted the message
+        # ----------------------------------------------------
+
+        return (
+            True,
+            (
+                "Gmail accepted the email for delivery "
+                f"to {len(all_recipients)} recipient(s)."
+            ),
+        )
+
+    except smtplib.SMTPAuthenticationError as exc:
+
+        return (
+            False,
+            (
+                "Gmail authentication failed. "
+                "Check that gmail_password in Streamlit Secrets "
+                "is a valid Google App Password."
+                f"\n\nSMTP error: {exc}"
+            ),
+        )
+
+    except smtplib.SMTPRecipientsRefused as exc:
+
+        return (
+            False,
+            f"Gmail refused the recipients: {exc}",
+        )
+
+    except smtplib.SMTPException as exc:
+
+        return (
+            False,
+            f"SMTP error while sending email: {exc}",
+        )
 
     except Exception as exc:
-        st.error(f"Failed to send email: {exc}")
-        return False
+
+        return (
+            False,
+            f"Unexpected email error: {type(exc).__name__}: {exc}",
+        )
 
 
 # ============================================================
@@ -231,21 +403,35 @@ def send_email_with_smtp(recipients, subject, body, csv_content, csv_filename):
 
 def get_github_settings():
     """Read GitHub settings from Streamlit Secrets."""
+
     try:
         token = st.secrets["github_token"]
-        username = st.secrets.get("github_username", GITHUB_OWNER)
-        repo = st.secrets.get("github_repo", GITHUB_REPO)
+
+        username = st.secrets.get(
+            "github_username",
+            GITHUB_OWNER,
+        )
+
+        repo = st.secrets.get(
+            "github_repo",
+            GITHUB_REPO,
+        )
+
         return token, username, repo
+
     except Exception:
         return None, None, None
 
 
 def get_github_connection():
     """Validate GitHub token and repository."""
+
     token, username, repo = get_github_settings()
 
     if not token:
-        raise RuntimeError("GitHub token is not configured in Streamlit Secrets.")
+        raise RuntimeError(
+            "GitHub token is not configured in Streamlit Secrets."
+        )
 
     if not username:
         username = GITHUB_OWNER
@@ -259,13 +445,21 @@ def get_github_connection():
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    repo_url = f"https://api.github.com/repos/{username}/{repo}"
+    repo_url = (
+        f"https://api.github.com/repos/"
+        f"{username}/{repo}"
+    )
 
-    response = requests.get(repo_url, headers=headers, timeout=20)
+    response = requests.get(
+        repo_url,
+        headers=headers,
+        timeout=20,
+    )
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"GitHub repository check failed ({response.status_code}): {response.text}"
+            "GitHub repository check failed "
+            f"({response.status_code}): {response.text}"
         )
 
     return headers, username, repo
@@ -273,34 +467,66 @@ def get_github_connection():
 
 def get_github_file(file_path):
     """Retrieve a file from GitHub."""
+
     headers, owner, repo = get_github_connection()
 
-    encoded_path = urllib.parse.quote(file_path, safe="/")
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}?ref={GITHUB_BRANCH}"
+    encoded_path = urllib.parse.quote(
+        file_path,
+        safe="/",
+    )
 
-    response = requests.get(url, headers=headers, timeout=20)
+    url = (
+        f"https://api.github.com/repos/"
+        f"{owner}/{repo}/contents/{encoded_path}"
+        f"?ref={GITHUB_BRANCH}"
+    )
+
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=20,
+    )
 
     if response.status_code == 404:
         return None, None
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"GitHub file lookup failed ({response.status_code}): {response.text}"
+            "GitHub file lookup failed "
+            f"({response.status_code}): {response.text}"
         )
 
     data = response.json()
 
     if data.get("encoding") == "base64":
-        content = base64.b64decode(data["content"].replace("\n", "")).decode("utf-8-sig")
+
+        content = (
+            base64.b64decode(
+                data["content"].replace("\n", "")
+            )
+            .decode("utf-8-sig")
+        )
+
     else:
+
         download_url = data.get("download_url")
+
         if not download_url:
-            raise RuntimeError("GitHub file has no downloadable content.")
-        file_response = requests.get(download_url, timeout=20)
+            raise RuntimeError(
+                "GitHub file has no downloadable content."
+            )
+
+        file_response = requests.get(
+            download_url,
+            timeout=20,
+        )
+
         if file_response.status_code != 200:
             raise RuntimeError(
-                f"Unable to download GitHub file ({file_response.status_code})."
+                "Unable to download GitHub file "
+                f"({file_response.status_code})."
             )
+
         content = file_response.text
 
     return content, data
@@ -308,15 +534,27 @@ def get_github_file(file_path):
 
 def list_saved_load_files():
     """List archived CSV files in the saved_loads GitHub folder."""
-    try:
-        headers, owner, repo = get_github_connection()
-        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{GITHUB_FOLDER}"
 
-        response = requests.get(url, headers=headers, timeout=20)
+    try:
+
+        headers, owner, repo = get_github_connection()
+
+        url = (
+            f"https://api.github.com/repos/"
+            f"{owner}/{repo}/contents/{GITHUB_FOLDER}"
+        )
+
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=20,
+        )
+
         if response.status_code != 200:
             return []
 
         items = response.json()
+
         if not isinstance(items, list):
             return []
 
@@ -324,32 +562,58 @@ def list_saved_load_files():
             item["name"]
             for item in items
             if item.get("type") == "file"
-            and str(item.get("name", "")).lower().endswith(".csv")
+            and str(
+                item.get("name", "")
+            ).lower().endswith(".csv")
         ]
+
     except Exception:
         return []
 
 
-def find_saved_load_file_for_load_ref(load_ref, saved_files=None):
-    """Find the archived CSV file for a given load reference."""
+def find_saved_load_file_for_load_ref(
+    load_ref,
+    saved_files=None,
+):
+    """Find archived CSV file for a load reference."""
+
     if load_ref is None:
         return None
 
     raw_load_ref = str(load_ref).strip()
-    if not raw_load_ref or raw_load_ref.lower() in ["nan", "none"]:
+
+    if (
+        not raw_load_ref
+        or raw_load_ref.lower() in ["nan", "none"]
+    ):
         return None
 
-    lookup_name = clean_filename(raw_load_ref).lower()
+    lookup_name = clean_filename(
+        raw_load_ref
+    ).lower()
+
     if not lookup_name:
         return None
 
-    file_list = saved_files if saved_files is not None else list_saved_load_files()
+    file_list = (
+        saved_files
+        if saved_files is not None
+        else list_saved_load_files()
+    )
 
     for file_name in file_list:
-        lower_name = file_name.lower()
-        stem = lower_name[:-4] if lower_name.endswith(".csv") else lower_name
 
-        if stem.startswith(f"{lookup_name}_"):
+        lower_name = file_name.lower()
+
+        stem = (
+            lower_name[:-4]
+            if lower_name.endswith(".csv")
+            else lower_name
+        )
+
+        if stem.startswith(
+            f"{lookup_name}_"
+        ):
             return file_name
 
         if lower_name == f"{lookup_name}.csv":
@@ -358,24 +622,52 @@ def find_saved_load_file_for_load_ref(load_ref, saved_files=None):
     return None
 
 
-def upload_github_file(file_path, file_content, commit_message):
+def upload_github_file(
+    file_path,
+    file_content,
+    commit_message,
+):
     """Create or update a file in GitHub."""
+
     headers, owner, repo = get_github_connection()
 
-    encoded_path = urllib.parse.quote(file_path, safe="/")
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}"
+    encoded_path = urllib.parse.quote(
+        file_path,
+        safe="/",
+    )
 
-    existing_response = requests.get(f"{url}?ref={GITHUB_BRANCH}", headers=headers, timeout=20)
+    url = (
+        f"https://api.github.com/repos/"
+        f"{owner}/{repo}/contents/{encoded_path}"
+    )
+
+    existing_response = requests.get(
+        f"{url}?ref={GITHUB_BRANCH}",
+        headers=headers,
+        timeout=20,
+    )
+
     sha = None
 
     if existing_response.status_code == 200:
-        sha = existing_response.json().get("sha")
-    elif existing_response.status_code != 404:
-        raise RuntimeError(
-            f"GitHub file path check failed ({existing_response.status_code}): {existing_response.text}"
+
+        sha = (
+            existing_response
+            .json()
+            .get("sha")
         )
 
-    encoded_content = base64.b64encode(file_content.encode("utf-8")).decode("ascii")
+    elif existing_response.status_code != 404:
+
+        raise RuntimeError(
+            "GitHub file path check failed "
+            f"({existing_response.status_code}): "
+            f"{existing_response.text}"
+        )
+
+    encoded_content = base64.b64encode(
+        file_content.encode("utf-8")
+    ).decode("ascii")
 
     payload = {
         "message": commit_message,
@@ -386,28 +678,55 @@ def upload_github_file(file_path, file_content, commit_message):
     if sha:
         payload["sha"] = sha
 
-    response = requests.put(url, headers=headers, json=payload, timeout=30)
+    response = requests.put(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
 
     if response.status_code not in (200, 201):
         raise RuntimeError(
-            f"GitHub upload failed ({response.status_code}): {response.text}"
+            "GitHub upload failed "
+            f"({response.status_code}): {response.text}"
         )
 
     result = response.json()
+
     return {
-        "file_url": result.get("content", {}).get("html_url"),
-        "download_url": result.get("content", {}).get("download_url"),
-        "commit_url": result.get("commit", {}).get("html_url"),
+        "file_url": result.get(
+            "content",
+            {},
+        ).get("html_url"),
+
+        "download_url": result.get(
+            "content",
+            {},
+        ).get("download_url"),
+
+        "commit_url": result.get(
+            "commit",
+            {},
+        ).get("html_url"),
     }
 
 
-def upload_to_github(csv_text, filename):
+def upload_to_github(
+    csv_text,
+    filename,
+):
     """Upload processed CSV into saved_loads."""
-    file_path = f"{GITHUB_FOLDER}/{filename}"
+
+    file_path = (
+        f"{GITHUB_FOLDER}/{filename}"
+    )
+
     return upload_github_file(
         file_path=file_path,
         file_content=csv_text,
-        commit_message=f"Archive load CSV: {filename}",
+        commit_message=(
+            f"Archive load CSV: {filename}"
+        ),
     )
 
 
@@ -415,66 +734,163 @@ def upload_to_github(csv_text, filename):
 # SKU HISTORY
 # ============================================================
 
-def update_sku_history(load_ref, sku_counts, submitted_date=None):
+def update_sku_history(
+    load_ref,
+    sku_counts,
+    submitted_date=None,
+):
     """Add current load to SKU history."""
-    existing_content, _ = get_github_file(SKU_HISTORY_PATH)
+
+    existing_content, _ = get_github_file(
+        SKU_HISTORY_PATH
+    )
 
     if existing_content:
+
         try:
-            history_df = pd.read_csv(io.StringIO(existing_content), dtype=str)
+
+            history_df = pd.read_csv(
+                io.StringIO(existing_content),
+                dtype=str,
+            )
+
         except Exception:
+
             history_df = pd.DataFrame()
+
     else:
+
         history_df = pd.DataFrame()
 
     if history_df.empty:
-        history_df = pd.DataFrame(columns=["Date Submitted", "Load Ref"])
+
+        history_df = pd.DataFrame(
+            columns=[
+                "Date Submitted",
+                "Load Ref",
+            ]
+        )
 
     if "Date Submitted" not in history_df.columns:
-        history_df.insert(0, "Date Submitted", "")
+
+        history_df.insert(
+            0,
+            "Date Submitted",
+            "",
+        )
 
     if "Load Ref" not in history_df.columns:
-        history_df.insert(1, "Load Ref", "")
 
-    other_columns = [c for c in history_df.columns if c not in ["Date Submitted", "Load Ref"]]
-    history_df = history_df[["Date Submitted", "Load Ref"] + other_columns]
+        history_df.insert(
+            1,
+            "Load Ref",
+            "",
+        )
+
+    other_columns = [
+        c
+        for c in history_df.columns
+        if c not in [
+            "Date Submitted",
+            "Load Ref",
+        ]
+    ]
+
+    history_df = history_df[
+        [
+            "Date Submitted",
+            "Load Ref",
+        ]
+        + other_columns
+    ]
 
     for sku in sku_counts.keys():
+
         if sku not in history_df.columns:
             history_df[sku] = 0
 
-    sku_columns = [c for c in history_df.columns if c not in ["Date Submitted", "Load Ref"]]
+    sku_columns = [
+        c
+        for c in history_df.columns
+        if c not in [
+            "Date Submitted",
+            "Load Ref",
+        ]
+    ]
 
     if sku_columns and not history_df.empty:
+
         history_df[sku_columns] = (
             history_df[sku_columns]
             .fillna(0)
-            .apply(pd.to_numeric, errors="coerce")
+            .apply(
+                pd.to_numeric,
+                errors="coerce",
+            )
             .fillna(0)
             .astype(int)
         )
 
-    london = pytz.timezone("Europe/London")
+    london = pytz.timezone(
+        "Europe/London"
+    )
 
     if submitted_date:
-        date_value = str(submitted_date).strip()
+
+        date_value = str(
+            submitted_date
+        ).strip()
+
     else:
-        date_value = datetime.now(london).strftime("%d/%m/%Y %H:%M")
 
-    new_row = {"Date Submitted": date_value, "Load Ref": load_ref}
+        date_value = datetime.now(
+            london
+        ).strftime(
+            "%d/%m/%Y %H:%M"
+        )
+
+    new_row = {
+        "Date Submitted": date_value,
+        "Load Ref": load_ref,
+    }
+
     for sku in sku_columns:
-        new_row[sku] = int(sku_counts.get(sku, 0))
 
-    history_df = pd.concat([history_df, pd.DataFrame([new_row])], ignore_index=True)
+        new_row[sku] = int(
+            sku_counts.get(
+                sku,
+                0,
+            )
+        )
+
+    history_df = pd.concat(
+        [
+            history_df,
+            pd.DataFrame([new_row]),
+        ],
+        ignore_index=True,
+    )
 
     if sku_columns:
-        history_df[sku_columns] = history_df[sku_columns].fillna(0).astype(int)
 
-    history_csv = history_df.to_csv(index=False, encoding="utf-8-sig")
+        history_df[sku_columns] = (
+            history_df[sku_columns]
+            .fillna(0)
+            .astype(int)
+        )
+
+    history_csv = history_df.to_csv(
+        index=False,
+        encoding="utf-8-sig",
+    )
+
     upload_github_file(
         file_path=SKU_HISTORY_PATH,
         file_content=history_csv,
-        commit_message=f"Update SKU history for load {load_ref}",
+        commit_message=(
+            f"Update SKU history for load "
+            f"{load_ref}"
+        ),
     )
 
     return history_df
@@ -484,65 +900,178 @@ def update_sku_history(load_ref, sku_counts, submitted_date=None):
 # HISTORIC CSV IMPORT
 # ============================================================
 
-def extract_historic_csv_data(uploaded_file):
-    """Read a historic SSCC CSV and extract load ref, date and SKU counts."""
-    try:
-        file_bytes = uploaded_file.getvalue()
-        try:
-            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
-        except Exception:
-            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, encoding="latin-1")
-    except Exception as exc:
-        raise ValueError(f"Unable to read {uploaded_file.name}: {exc}")
+def extract_historic_csv_data(
+    uploaded_file,
+):
+    """Read historic SSCC CSV and extract data."""
 
-    df.columns = [str(column).strip() for column in df.columns]
+    try:
+
+        file_bytes = uploaded_file.getvalue()
+
+        try:
+
+            df = pd.read_csv(
+                io.BytesIO(file_bytes),
+                dtype=str,
+            )
+
+        except Exception:
+
+            df = pd.read_csv(
+                io.BytesIO(file_bytes),
+                dtype=str,
+                encoding="latin-1",
+            )
+
+    except Exception as exc:
+
+        raise ValueError(
+            f"Unable to read "
+            f"{uploaded_file.name}: {exc}"
+        )
+
+    df.columns = [
+        str(column).strip()
+        for column in df.columns
+    ]
 
     if "Item Code" not in df.columns:
-        raise ValueError(f"{uploaded_file.name} does not contain an 'Item Code' column.")
+
+        raise ValueError(
+            f"{uploaded_file.name} does not contain "
+            "'Item Code'."
+        )
 
     if "Load Ref" not in df.columns:
-        raise ValueError(f"{uploaded_file.name} does not contain a 'Load Ref' column.")
 
-    load_refs = df["Load Ref"].dropna().astype(str).str.strip()
-    load_refs = [value for value in load_refs if value and value.lower() not in ["nan", "none"]]
+        raise ValueError(
+            f"{uploaded_file.name} does not contain "
+            "'Load Ref'."
+        )
+
+    load_refs = (
+        df["Load Ref"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    load_refs = [
+        value
+        for value in load_refs
+        if value
+        and value.lower()
+        not in ["nan", "none"]
+    ]
 
     if not load_refs:
-        raise ValueError(f"{uploaded_file.name} does not contain a valid Load Ref.")
+
+        raise ValueError(
+            f"{uploaded_file.name} does not contain "
+            "a valid Load Ref."
+        )
 
     load_ref = load_refs[0]
 
     submitted_date = None
 
     if "Date" in df.columns:
-        date_values = df["Date"].dropna().astype(str).str.strip()
-        date_values = [value for value in date_values if value and value.lower() not in ["nan", "none"]]
+
+        date_values = (
+            df["Date"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+
+        date_values = [
+            value
+            for value in date_values
+            if value
+            and value.lower()
+            not in ["nan", "none"]
+        ]
+
         if date_values:
             submitted_date = date_values[0]
 
-    if not submitted_date and "Date Submitted" in df.columns:
-        date_values = df["Date Submitted"].dropna().astype(str).str.strip()
-        date_values = [value for value in date_values if value and value.lower() not in ["nan", "none"]]
+    if (
+        not submitted_date
+        and "Date Submitted" in df.columns
+    ):
+
+        date_values = (
+            df["Date Submitted"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+
+        date_values = [
+            value
+            for value in date_values
+            if value
+            and value.lower()
+            not in ["nan", "none"]
+        ]
+
         if date_values:
             submitted_date = date_values[0]
 
     if not submitted_date:
-        raise ValueError(f"{uploaded_file.name} does not contain a usable Date or Date Submitted column.")
+
+        raise ValueError(
+            f"{uploaded_file.name} does not contain "
+            "a usable Date or Date Submitted."
+        )
 
     df = df.dropna(how="all")
 
     if "SSCC Code" in df.columns:
-        df = df[~df["SSCC Code"].apply(is_summary_row)]
 
-    na_mask = df.map(is_explicit_na).any(axis=1)
+        df = df[
+            ~df["SSCC Code"].apply(
+                is_summary_row
+            )
+        ]
+
+    na_mask = df.map(
+        is_explicit_na
+    ).any(axis=1)
+
     df = df[~na_mask]
 
-    item_codes = df["Item Code"].dropna().astype(str).str.strip()
-    item_codes = item_codes[~item_codes.str.lower().isin(["", "nan", "none"])]
+    item_codes = (
+        df["Item Code"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    item_codes = item_codes[
+        ~item_codes.str.lower().isin(
+            [
+                "",
+                "nan",
+                "none",
+            ]
+        )
+    ]
 
     if item_codes.empty:
-        raise ValueError(f"{uploaded_file.name} contains no usable Item Code values.")
 
-    sku_counts = item_codes.value_counts().sort_index().to_dict()
+        raise ValueError(
+            f"{uploaded_file.name} contains "
+            "no usable Item Code values."
+        )
+
+    sku_counts = (
+        item_codes
+        .value_counts()
+        .sort_index()
+        .to_dict()
+    )
 
     return {
         "filename": uploaded_file.name,
@@ -554,54 +1083,108 @@ def extract_historic_csv_data(uploaded_file):
 
 
 def normalise_history_date(value):
-    """Convert a history date into a consistent comparison string."""
+    """Convert history date into consistent string."""
+
     if pd.isna(value):
         return ""
 
     text = str(value).strip()
+
     if not text:
         return ""
 
-    parsed = pd.to_datetime(text, dayfirst=True, errors="coerce")
+    parsed = pd.to_datetime(
+        text,
+        dayfirst=True,
+        errors="coerce",
+    )
+
     if pd.isna(parsed):
         return text
 
-    return parsed.strftime("%d/%m/%Y %H:%M")
+    return parsed.strftime(
+        "%d/%m/%Y %H:%M"
+    )
 
 
-def import_historic_csvs(imported_records):
-    """Merge historic CSV records into the existing GitHub SKU history."""
-    existing_content, _ = get_github_file(SKU_HISTORY_PATH)
+def import_historic_csvs(
+    imported_records,
+):
+    """Merge historic CSV records into GitHub history."""
+
+    existing_content, _ = get_github_file(
+        SKU_HISTORY_PATH
+    )
 
     if existing_content:
+
         try:
-            history_df = pd.read_csv(io.StringIO(existing_content), dtype=str)
+
+            history_df = pd.read_csv(
+                io.StringIO(existing_content),
+                dtype=str,
+            )
+
         except Exception:
+
             history_df = pd.DataFrame()
+
     else:
+
         history_df = pd.DataFrame()
 
     if history_df.empty:
-        history_df = pd.DataFrame(columns=["Date Submitted", "Load Ref"])
+
+        history_df = pd.DataFrame(
+            columns=[
+                "Date Submitted",
+                "Load Ref",
+            ]
+        )
 
     if "Date Submitted" not in history_df.columns:
-        history_df.insert(0, "Date Submitted", "")
+
+        history_df.insert(
+            0,
+            "Date Submitted",
+            "",
+        )
 
     if "Load Ref" not in history_df.columns:
-        history_df.insert(1, "Load Ref", "")
+
+        history_df.insert(
+            1,
+            "Load Ref",
+            "",
+        )
 
     for record in imported_records:
-        for sku in record["sku_counts"].keys():
+
+        for sku in record[
+            "sku_counts"
+        ].keys():
+
             if sku not in history_df.columns:
                 history_df[sku] = 0
 
-    sku_columns = [column for column in history_df.columns if column not in ["Date Submitted", "Load Ref"]]
+    sku_columns = [
+        column
+        for column in history_df.columns
+        if column not in [
+            "Date Submitted",
+            "Load Ref",
+        ]
+    ]
 
     if sku_columns:
+
         history_df[sku_columns] = (
             history_df[sku_columns]
             .fillna(0)
-            .apply(pd.to_numeric, errors="coerce")
+            .apply(
+                pd.to_numeric,
+                errors="coerce",
+            )
             .fillna(0)
             .astype(int)
         )
@@ -609,55 +1192,125 @@ def import_historic_csvs(imported_records):
     existing_keys = set()
 
     for _, row in history_df.iterrows():
-        existing_load = str(row.get("Load Ref", "")).strip()
-        existing_date = normalise_history_date(row.get("Date Submitted", ""))
+
+        existing_load = str(
+            row.get(
+                "Load Ref",
+                "",
+            )
+        ).strip()
+
+        existing_date = normalise_history_date(
+            row.get(
+                "Date Submitted",
+                "",
+            )
+        )
+
         if existing_load and existing_date:
-            existing_keys.add((existing_load.lower(), existing_date))
+
+            existing_keys.add(
+                (
+                    existing_load.lower(),
+                    existing_date,
+                )
+            )
 
     added_records = []
     skipped_records = []
 
     for record in imported_records:
-        load_ref = str(record["load_ref"]).strip()
-        submitted_date = normalise_history_date(record["date_submitted"])
-        key = (load_ref.lower(), submitted_date)
+
+        load_ref = str(
+            record["load_ref"]
+        ).strip()
+
+        submitted_date = normalise_history_date(
+            record["date_submitted"]
+        )
+
+        key = (
+            load_ref.lower(),
+            submitted_date,
+        )
 
         if key in existing_keys:
-            skipped_records.append({
-                "Filename": record["filename"],
-                "Load Ref": load_ref,
-                "Date Submitted": submitted_date,
-                "Reason": "Already exists",
-            })
+
+            skipped_records.append(
+                {
+                    "Filename": record[
+                        "filename"
+                    ],
+                    "Load Ref": load_ref,
+                    "Date Submitted": submitted_date,
+                    "Reason": "Already exists",
+                }
+            )
+
             continue
 
-        new_row = {"Date Submitted": submitted_date, "Load Ref": load_ref}
+        new_row = {
+            "Date Submitted": submitted_date,
+            "Load Ref": load_ref,
+        }
 
         for sku in sku_columns:
-            new_row[sku] = int(record["sku_counts"].get(sku, 0))
 
-        history_df = pd.concat([history_df, pd.DataFrame([new_row])], ignore_index=True)
+            new_row[sku] = int(
+                record[
+                    "sku_counts"
+                ].get(
+                    sku,
+                    0,
+                )
+            )
+
+        history_df = pd.concat(
+            [
+                history_df,
+                pd.DataFrame([new_row]),
+            ],
+            ignore_index=True,
+        )
+
         existing_keys.add(key)
+
         added_records.append(record)
 
     if sku_columns:
+
         history_df[sku_columns] = (
             history_df[sku_columns]
             .fillna(0)
-            .apply(pd.to_numeric, errors="coerce")
+            .apply(
+                pd.to_numeric,
+                errors="coerce",
+            )
             .fillna(0)
             .astype(int)
         )
 
     if added_records:
-        history_csv = history_df.to_csv(index=False, encoding="utf-8-sig")
+
+        history_csv = history_df.to_csv(
+            index=False,
+            encoding="utf-8-sig",
+        )
+
         upload_github_file(
             file_path=SKU_HISTORY_PATH,
             file_content=history_csv,
-            commit_message="Import historic CSV loads into SKU history",
+            commit_message=(
+                "Import historic CSV loads "
+                "into SKU history"
+            ),
         )
 
-    return history_df, added_records, skipped_records
+    return (
+        history_df,
+        added_records,
+        skipped_records,
+    )
 
 
 # ============================================================
@@ -665,39 +1318,90 @@ def import_historic_csvs(imported_records):
 # ============================================================
 
 def clean_filename(value):
+
     value = str(value).strip()
-    value = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
-    return value.strip("_") or "load"
+
+    value = re.sub(
+        r"[^A-Za-z0-9._-]+",
+        "_",
+        value,
+    )
+
+    return (
+        value.strip("_")
+        or "load"
+    )
 
 
 def is_summary_row(value):
+
     if pd.isna(value):
         return False
+
     text = str(value).strip().lower()
-    summary_terms = ["total", "subtotal", "summary"]
-    return any(term in text for term in summary_terms)
+
+    summary_terms = [
+        "total",
+        "subtotal",
+        "summary",
+    ]
+
+    return any(
+        term in text
+        for term in summary_terms
+    )
 
 
 def is_explicit_na(value):
+
     if pd.isna(value):
         return False
+
     text = str(value).strip().lower()
-    return text in ["na", "n/a", "#n/a", "null", "none"]
+
+    return text in [
+        "na",
+        "n/a",
+        "#n/a",
+        "null",
+        "none",
+    ]
 
 
 def read_wms_data(raw_text):
+
     raw_text = raw_text.strip()
+
     if not raw_text:
-        raise ValueError("No WMS data was entered.")
+
+        raise ValueError(
+            "No WMS data was entered."
+        )
 
     try:
-        df = pd.read_csv(io.StringIO(raw_text), sep="\t", dtype=str)
+
+        df = pd.read_csv(
+            io.StringIO(raw_text),
+            sep="\t",
+            dtype=str,
+        )
+
         if len(df.columns) == 1:
             raise ValueError
-    except Exception:
-        df = pd.read_csv(io.StringIO(raw_text), sep=",", dtype=str)
 
-    df.columns = [str(column).strip() for column in df.columns]
+    except Exception:
+
+        df = pd.read_csv(
+            io.StringIO(raw_text),
+            sep=",",
+            dtype=str,
+        )
+
+    df.columns = [
+        str(column).strip()
+        for column in df.columns
+    ]
+
     return df
 
 
@@ -706,70 +1410,206 @@ def read_wms_data(raw_text):
 # ============================================================
 
 def show_home():
-    st.markdown('<div class="main-title">KP to Campeys</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Campeys Operations Tools</div>', unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="main-title">'
+        'KP to Campeys'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="sub-title">'
+        'Campeys Operations Tools'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.markdown('<div class="tool-icon">📦</div>', unsafe_allow_html=True)
-        st.markdown('<div class="tool-title">KP to Campeys SSCC Sender</div>', unsafe_allow_html=True)
+
         st.markdown(
-            '<div class="tool-description">Convert WMS data into the Campeys SSCC CSV format and archive the load.</div>',
+            '<div class="tool-icon">📦</div>',
             unsafe_allow_html=True,
         )
-        if st.button("Open SSCC Sender", key="open_sender", use_container_width=True):
+
+        st.markdown(
+            '<div class="tool-title">'
+            'KP to Campeys SSCC Sender'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="tool-description">'
+            'Convert WMS data into the Campeys '
+            'SSCC CSV format and archive the load.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        if st.button(
+            "Open SSCC Sender",
+            key="open_sender",
+            use_container_width=True,
+        ):
+
             go_to("sender")
             st.rerun()
 
     with col2:
-        st.markdown('<div class="tool-icon">📊</div>', unsafe_allow_html=True)
-        st.markdown('<div class="tool-title">Load History</div>', unsafe_allow_html=True)
+
         st.markdown(
-            '<div class="tool-description">View historical SKU quantities submitted for each Campeys load.</div>',
+            '<div class="tool-icon">📊</div>',
             unsafe_allow_html=True,
         )
-        if st.button("Open Load History", key="open_history", use_container_width=True):
+
+        st.markdown(
+            '<div class="tool-title">'
+            'Load History'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="tool-description">'
+            'View historical SKU quantities '
+            'submitted for each Campeys load.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        if st.button(
+            "Open Load History",
+            key="open_history",
+            use_container_width=True,
+        ):
+
             go_to("history")
             st.rerun()
 
     with col3:
-        st.markdown('<div class="tool-icon">🏭</div>', unsafe_allow_html=True)
-        st.markdown('<div class="tool-title">AutoStore</div>', unsafe_allow_html=True)
-        st.markdown('<div class="tool-description">Open the live AutoStore application.</div>', unsafe_allow_html=True)
-        st.link_button("Open AutoStore", AUTOSTORE_URL, use_container_width=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="tool-icon">🏭</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="tool-title">'
+            'AutoStore'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="tool-description">'
+            'Open the live AutoStore application.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.link_button(
+            "Open AutoStore",
+            AUTOSTORE_URL,
+            use_container_width=True,
+        )
+
+    st.markdown(
+        "<br>",
+        unsafe_allow_html=True,
+    )
+
     col4, col5, col6 = st.columns(3)
 
     with col4:
-        st.markdown('<div class="tool-icon">👥</div>', unsafe_allow_html=True)
-        st.markdown('<div class="tool-title">Campeys Contact List</div>', unsafe_allow_html=True)
+
         st.markdown(
-            '<div class="tool-description">View the Campeys contact list stored in the GitHub repository.</div>',
+            '<div class="tool-icon">👥</div>',
             unsafe_allow_html=True,
         )
-        if st.button("Open Contact List", key="open_contacts", use_container_width=True):
+
+        st.markdown(
+            '<div class="tool-title">'
+            'Campeys Contact List'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="tool-description">'
+            'View the Campeys contact list '
+            'stored in the GitHub repository.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        if st.button(
+            "Open Contact List",
+            key="open_contacts",
+            use_container_width=True,
+        ):
+
             go_to("contacts")
             st.rerun()
 
     with col5:
-        st.markdown('<div class="tool-icon">📋</div>', unsafe_allow_html=True)
-        st.markdown('<div class="tool-title">Campeys Load Planner</div>', unsafe_allow_html=True)
+
         st.markdown(
-            '<div class="tool-description">Open the Campeys collection request and load planner workbook.</div>',
+            '<div class="tool-icon">📋</div>',
             unsafe_allow_html=True,
         )
-        st.link_button("Open Load Planner", CAMPEYS_LOAD_PLANNER_URL, use_container_width=True)
+
+        st.markdown(
+            '<div class="tool-title">'
+            'Campeys Load Planner'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="tool-description">'
+            'Open the Campeys collection request '
+            'and load planner workbook.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.link_button(
+            "Open Load Planner",
+            CAMPEYS_LOAD_PLANNER_URL,
+            use_container_width=True,
+        )
 
     with col6:
-        st.markdown('<div class="tool-icon">📥</div>', unsafe_allow_html=True)
-        st.markdown('<div class="tool-title">Import Historic CSVs</div>', unsafe_allow_html=True)
+
         st.markdown(
-            '<div class="tool-description">Import previous SSCC CSVs into the load history.</div>',
+            '<div class="tool-icon">📥</div>',
             unsafe_allow_html=True,
         )
-        if st.button("Import Historic CSVs", key="open_import", use_container_width=True):
+
+        st.markdown(
+            '<div class="tool-title">'
+            'Import Historic CSVs'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="tool-description">'
+            'Import previous SSCC CSVs into '
+            'the load history.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        if st.button(
+            "Import Historic CSVs",
+            key="open_import",
+            use_container_width=True,
+        ):
+
             go_to("import")
             st.rerun()
 
@@ -779,181 +1619,477 @@ def show_home():
 # ============================================================
 
 def show_history():
-    st.button("← Back to Home", key="history_back", on_click=go_to, args=("home",))
+
+    st.button(
+        "← Back to Home",
+        key="history_back",
+        on_click=go_to,
+        args=("home",),
+    )
 
     st.title("📊 Load History")
-    st.caption("Explore SKU quantities across all submitted loads.")
+
+    st.caption(
+        "Explore SKU quantities across all submitted loads."
+    )
 
     try:
-        history_content, _ = get_github_file(SKU_HISTORY_PATH)
+
+        history_content, _ = get_github_file(
+            SKU_HISTORY_PATH
+        )
 
         if not history_content:
-            st.info("No load history has been created yet.")
+
+            st.info(
+                "No load history has been created yet."
+            )
+
             return
 
-        history_df = pd.read_csv(io.StringIO(history_content))
+        history_df = pd.read_csv(
+            io.StringIO(history_content)
+        )
 
         if history_df.empty:
-            st.info("No load history has been created yet.")
+
+            st.info(
+                "No load history has been created yet."
+            )
+
             return
 
-        non_sku_columns = ["Date Submitted", "Load Ref"]
-        sku_columns = [column for column in history_df.columns if column not in non_sku_columns]
+        non_sku_columns = [
+            "Date Submitted",
+            "Load Ref",
+        ]
+
+        sku_columns = [
+            column
+            for column in history_df.columns
+            if column not in non_sku_columns
+        ]
 
         if not sku_columns:
-            st.info("No SKU history data is available yet.")
+
+            st.info(
+                "No SKU history data is available yet."
+            )
+
             return
 
         for sku in sku_columns:
-            history_df[sku] = pd.to_numeric(history_df[sku], errors="coerce").fillna(0)
 
-        st.subheader("SKU Quantity Chart")
+            history_df[sku] = pd.to_numeric(
+                history_df[sku],
+                errors="coerce",
+            ).fillna(0)
+
+        st.subheader(
+            "SKU Quantity Chart"
+        )
+
         chart_view = st.radio(
             "View",
-            options=["Historic Totals", "By Load", "By Date Sent"],
+            options=[
+                "Historic Totals",
+                "By Load",
+                "By Date Sent",
+            ],
             horizontal=True,
             key="history_chart_view",
         )
 
         if chart_view == "Historic Totals":
-            st.caption("Total quantity sent for each SKU across all historical loads.")
-            historic_totals = history_df[sku_columns].sum().sort_values(ascending=False)
-            historic_totals = historic_totals[historic_totals > 0]
+
+            st.caption(
+                "Total quantity sent for each SKU "
+                "across all historical loads."
+            )
+
+            historic_totals = (
+                history_df[sku_columns]
+                .sum()
+                .sort_values(
+                    ascending=False
+                )
+            )
+
+            historic_totals = historic_totals[
+                historic_totals > 0
+            ]
 
             if historic_totals.empty:
-                st.info("There are no SKU quantities available to chart.")
+
+                st.info(
+                    "There are no SKU quantities "
+                    "available to chart."
+                )
+
             else:
-                historic_chart_df = pd.DataFrame({
-                    "SKU": historic_totals.index,
-                    "Quantity": historic_totals.values
-                }).set_index("SKU")
-                st.bar_chart(historic_chart_df, use_container_width=True)
+
+                historic_chart_df = pd.DataFrame(
+                    {
+                        "SKU": historic_totals.index,
+                        "Quantity": historic_totals.values,
+                    }
+                ).set_index("SKU")
+
+                st.bar_chart(
+                    historic_chart_df,
+                    use_container_width=True,
+                )
 
         elif chart_view == "By Load":
-            st.caption("Select a load to see its SKU quantities.")
-            load_options = history_df["Load Ref"].dropna().astype(str).drop_duplicates().tolist()
+
+            st.caption(
+                "Select a load to see its SKU quantities."
+            )
+
+            load_options = (
+                history_df["Load Ref"]
+                .dropna()
+                .astype(str)
+                .drop_duplicates()
+                .tolist()
+            )
 
             if not load_options:
-                st.info("No load references are available.")
+
+                st.info(
+                    "No load references are available."
+                )
+
             else:
-                selected_load = st.selectbox("Select Load", options=load_options, key="history_load_selector")
-                selected_rows = history_df[history_df["Load Ref"].astype(str) == selected_load]
-                selected_totals = selected_rows[sku_columns].sum().sort_values(ascending=False)
-                selected_totals = selected_totals[selected_totals > 0]
+
+                selected_load = st.selectbox(
+                    "Select Load",
+                    options=load_options,
+                    key="history_load_selector",
+                )
+
+                selected_rows = history_df[
+                    history_df["Load Ref"]
+                    .astype(str)
+                    == selected_load
+                ]
+
+                selected_totals = (
+                    selected_rows[sku_columns]
+                    .sum()
+                    .sort_values(
+                        ascending=False
+                    )
+                )
+
+                selected_totals = selected_totals[
+                    selected_totals > 0
+                ]
 
                 if selected_totals.empty:
-                    st.info("There are no SKU quantities available for this load.")
+
+                    st.info(
+                        "There are no SKU quantities "
+                        "available for this load."
+                    )
+
                 else:
-                    selected_chart_df = pd.DataFrame({
-                        "SKU": selected_totals.index,
-                        "Quantity": selected_totals.values
-                    }).set_index("SKU")
-                    st.bar_chart(selected_chart_df, use_container_width=True)
+
+                    selected_chart_df = pd.DataFrame(
+                        {
+                            "SKU": selected_totals.index,
+                            "Quantity": selected_totals.values,
+                        }
+                    ).set_index("SKU")
+
+                    st.bar_chart(
+                        selected_chart_df,
+                        use_container_width=True,
+                    )
 
         elif chart_view == "By Date Sent":
-            st.caption("Select a date to see the combined SKU quantities from all loads submitted that day.")
-            history_df["_Submitted Date"] = pd.to_datetime(history_df["Date Submitted"], dayfirst=True, errors="coerce")
-            history_df["_Date Only"] = history_df["_Submitted Date"].dt.strftime("%d/%m/%Y")
 
-            date_options = history_df["_Date Only"].dropna().drop_duplicates().tolist()
-            date_options = sorted(date_options, key=lambda value: datetime.strptime(value, "%d/%m/%Y"), reverse=True)
+            st.caption(
+                "Select a date to see the combined "
+                "SKU quantities from all loads "
+                "submitted that day."
+            )
+
+            history_df["_Submitted Date"] = (
+                pd.to_datetime(
+                    history_df["Date Submitted"],
+                    dayfirst=True,
+                    errors="coerce",
+                )
+            )
+
+            history_df["_Date Only"] = (
+                history_df["_Submitted Date"]
+                .dt.strftime("%d/%m/%Y")
+            )
+
+            date_options = (
+                history_df["_Date Only"]
+                .dropna()
+                .drop_duplicates()
+                .tolist()
+            )
+
+            date_options = sorted(
+                date_options,
+                key=lambda value: datetime.strptime(
+                    value,
+                    "%d/%m/%Y",
+                ),
+                reverse=True,
+            )
 
             if not date_options:
-                st.info("No submission dates are available.")
+
+                st.info(
+                    "No submission dates are available."
+                )
+
             else:
-                selected_date = st.selectbox("Select Date Sent", options=date_options, key="history_date_selector")
-                selected_date_rows = history_df[history_df["_Date Only"] == selected_date]
-                date_totals = selected_date_rows[sku_columns].sum().sort_values(ascending=False)
-                date_totals = date_totals[date_totals > 0]
+
+                selected_date = st.selectbox(
+                    "Select Date Sent",
+                    options=date_options,
+                    key="history_date_selector",
+                )
+
+                selected_date_rows = history_df[
+                    history_df["_Date Only"]
+                    == selected_date
+                ]
+
+                date_totals = (
+                    selected_date_rows[sku_columns]
+                    .sum()
+                    .sort_values(
+                        ascending=False
+                    )
+                )
+
+                date_totals = date_totals[
+                    date_totals > 0
+                ]
 
                 if date_totals.empty:
-                    st.info("There are no SKU quantities available for this date.")
+
+                    st.info(
+                        "There are no SKU quantities "
+                        "available for this date."
+                    )
+
                 else:
-                    date_chart_df = pd.DataFrame({
-                        "SKU": date_totals.index,
-                        "Quantity": date_totals.values
-                    }).set_index("SKU")
-                    st.bar_chart(date_chart_df, use_container_width=True)
+
+                    date_chart_df = pd.DataFrame(
+                        {
+                            "SKU": date_totals.index,
+                            "Quantity": date_totals.values,
+                        }
+                    ).set_index("SKU")
+
+                    st.bar_chart(
+                        date_chart_df,
+                        use_container_width=True,
+                    )
 
         st.divider()
-        st.subheader("Historical Data")
 
-        display_history_df = history_df.drop(columns=["_Submitted Date", "_Date Only"], errors="ignore")
+        st.subheader(
+            "Historical Data"
+        )
+
+        display_history_df = history_df.drop(
+            columns=[
+                "_Submitted Date",
+                "_Date Only",
+            ],
+            errors="ignore",
+        )
+
         saved_files = list_saved_load_files()
 
         if display_history_df.empty:
-            st.info("No history rows are available to display.")
+
+            st.info(
+                "No history rows are available to display."
+            )
+
             return
 
-        st.write("Use the button on the right of each row to download the matching archived CSV.")
+        st.write(
+            "Use the button on the right of each "
+            "row to download the matching archived CSV."
+        )
 
-        header_cols = st.columns([1.8, 2.2, 4.2, 1.4])
-        header_cols[0].markdown("**Date Submitted**")
-        header_cols[1].markdown("**Load Ref**")
-        header_cols[2].markdown("**SKU Summary**")
-        header_cols[3].markdown("**CSV**")
+        header_cols = st.columns(
+            [1.8, 2.2, 4.2, 1.4]
+        )
+
+        header_cols[0].markdown(
+            "**Date Submitted**"
+        )
+
+        header_cols[1].markdown(
+            "**Load Ref**"
+        )
+
+        header_cols[2].markdown(
+            "**SKU Summary**"
+        )
+
+        header_cols[3].markdown(
+            "**CSV**"
+        )
 
         for index, row in display_history_df.iterrows():
-            date_value = str(row.get("Date Submitted", "")).strip()
-            load_ref = str(row.get("Load Ref", "")).strip()
+
+            date_value = str(
+                row.get(
+                    "Date Submitted",
+                    "",
+                )
+            ).strip()
+
+            load_ref = str(
+                row.get(
+                    "Load Ref",
+                    "",
+                )
+            ).strip()
 
             summary_parts = []
-            for col in display_history_df.columns:
-                if col in ["Date Submitted", "Load Ref"]:
-                    continue
-                val = row.get(col, 0)
-                try:
-                    qty = int(float(val))
-                except Exception:
-                    qty = 0
-                if qty > 0:
-                    summary_parts.append(f"{col}: {qty}")
 
-            sku_summary = ", ".join(summary_parts) if summary_parts else "No SKU data"
-            cols = st.columns([1.8, 2.2, 4.2, 1.4])
+            for col in display_history_df.columns:
+
+                if col in [
+                    "Date Submitted",
+                    "Load Ref",
+                ]:
+                    continue
+
+                val = row.get(
+                    col,
+                    0,
+                )
+
+                try:
+
+                    qty = int(
+                        float(val)
+                    )
+
+                except Exception:
+
+                    qty = 0
+
+                if qty > 0:
+
+                    summary_parts.append(
+                        f"{col}: {qty}"
+                    )
+
+            sku_summary = (
+                ", ".join(summary_parts)
+                if summary_parts
+                else "No SKU data"
+            )
+
+            cols = st.columns(
+                [1.8, 2.2, 4.2, 1.4]
+            )
 
             with cols[0]:
-                st.write(date_value or "N/A")
+                st.write(
+                    date_value or "N/A"
+                )
 
             with cols[1]:
-                st.write(load_ref or "N/A")
+                st.write(
+                    load_ref or "N/A"
+                )
 
             with cols[2]:
-                st.write(sku_summary)
+                st.write(
+                    sku_summary
+                )
 
             with cols[3]:
-                file_name = find_saved_load_file_for_load_ref(load_ref, saved_files)
+
+                file_name = (
+                    find_saved_load_file_for_load_ref(
+                        load_ref,
+                        saved_files,
+                    )
+                )
+
                 if file_name:
-                    file_path = f"{GITHUB_FOLDER}/{file_name}"
-                    csv_content, _ = get_github_file(file_path)
+
+                    file_path = (
+                        f"{GITHUB_FOLDER}/{file_name}"
+                    )
+
+                    csv_content, _ = get_github_file(
+                        file_path
+                    )
 
                     if csv_content:
-                        key_name = f"download_row_{index}_{re.sub(r'[^A-Za-z0-9_]+', '_', load_ref)}"
+
+                        key_name = (
+                            f"download_row_{index}_"
+                            f"{re.sub(
+                                r'[^A-Za-z0-9_]+',
+                                '_',
+                                load_ref,
+                            )}"
+                        )
+
                         st.download_button(
                             label="Download CSV",
-                            data=csv_content.encode("utf-8-sig"),
+                            data=csv_content.encode(
+                                "utf-8-sig"
+                            ),
                             file_name=file_name,
                             mime="text/csv",
                             key=key_name,
                             use_container_width=True,
                         )
-                    else:
-                        st.caption("No file")
-                else:
-                    st.caption("No file")
 
-            st.markdown("<hr style='margin: 0.35rem 0 0.7rem 0;'>", unsafe_allow_html=True)
+                    else:
+
+                        st.caption(
+                            "No file"
+                        )
+
+                else:
+
+                    st.caption(
+                        "No file"
+                    )
+
+            st.markdown(
+                "<hr style='margin: 0.35rem 0 0.7rem 0;'>",
+                unsafe_allow_html=True,
+            )
 
         st.download_button(
             "Download Full Load History CSV",
-            data=history_content.encode("utf-8-sig"),
+            data=history_content.encode(
+                "utf-8-sig"
+            ),
             file_name=SKU_HISTORY_PATH,
             mime="text/csv",
             use_container_width=True,
         )
 
     except Exception as exc:
-        st.error(f"Unable to load the history table: {exc}")
+
+        st.error(
+            f"Unable to load the history table: {exc}"
+        )
 
 
 # ============================================================
@@ -961,150 +2097,358 @@ def show_history():
 # ============================================================
 
 def show_import():
-    st.button("← Back to Home", key="import_back", on_click=go_to, args=("home",))
 
-    st.title("📥 Import Historic CSVs")
-    st.caption("Import previous SSCC CSV files into the Campeys SKU load history.")
+    st.button(
+        "← Back to Home",
+        key="import_back",
+        on_click=go_to,
+        args=("home",),
+    )
 
-    st.info("Select one or more historic SSCC CSV files. The importer will read the Load Ref, Date and Item Code values and add the SKU counts to the GitHub load history.")
+    st.title(
+        "📥 Import Historic CSVs"
+    )
 
-    uploaded_files = st.file_uploader("Select Historic CSV Files", type=["csv"], accept_multiple_files=True, key="historic_csv_uploader")
+    st.caption(
+        "Import previous SSCC CSV files into "
+        "the Campeys SKU load history."
+    )
+
+    st.info(
+        "Select one or more historic SSCC CSV files. "
+        "The importer will read the Load Ref, Date "
+        "and Item Code values and add the SKU counts "
+        "to the GitHub load history."
+    )
+
+    uploaded_files = st.file_uploader(
+        "Select Historic CSV Files",
+        type=["csv"],
+        accept_multiple_files=True,
+        key="historic_csv_uploader",
+    )
 
     if not uploaded_files:
+
         st.markdown(
             """
             **Expected CSV format**
+
             The historic files should contain at least:
+
             - `Load Ref`
             - `Date`
             - `Item Code`
 
-            The importer will count the Item Code entries to create the SKU quantities for each load.
+            The importer will count the Item Code
+            entries to create the SKU quantities
+            for each load.
             """
         )
+
         return
 
-    st.subheader("Files Selected")
+    st.subheader(
+        "Files Selected"
+    )
+
     import_records = []
     import_errors = []
 
     for uploaded_file in uploaded_files:
+
         try:
-            record = extract_historic_csv_data(uploaded_file)
+
+            record = extract_historic_csv_data(
+                uploaded_file
+            )
+
             import_records.append(record)
+
         except Exception as exc:
-            import_errors.append({"Filename": uploaded_file.name, "Error": str(exc)})
+
+            import_errors.append(
+                {
+                    "Filename": uploaded_file.name,
+                    "Error": str(exc),
+                }
+            )
 
     if import_errors:
-        st.error(f"{len(import_errors)} file(s) could not be read.")
-        st.dataframe(pd.DataFrame(import_errors), use_container_width=True, hide_index=True)
+
+        st.error(
+            f"{len(import_errors)} file(s) "
+            "could not be read."
+        )
+
+        st.dataframe(
+            pd.DataFrame(import_errors),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     if not import_records:
-        st.warning("There are no valid historic CSVs to import.")
+
+        st.warning(
+            "There are no valid historic CSVs to import."
+        )
+
         return
 
     preview_rows = []
+
     for record in import_records:
-        preview_rows.append({
-            "Filename": record["filename"],
-            "Load Ref": record["load_ref"],
-            "Date Submitted": record["date_submitted"],
-            "SKU Count": len(record["sku_counts"]),
-            "Rows Processed": record["row_count"],
-        })
 
-    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+        preview_rows.append(
+            {
+                "Filename": record[
+                    "filename"
+                ],
+                "Load Ref": record[
+                    "load_ref"
+                ],
+                "Date Submitted": record[
+                    "date_submitted"
+                ],
+                "SKU Count": len(
+                    record[
+                        "sku_counts"
+                    ]
+                ),
+                "Rows Processed": record[
+                    "row_count"
+                ],
+            }
+        )
 
-    st.subheader("SKU Preview")
+    st.dataframe(
+        pd.DataFrame(preview_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader(
+        "SKU Preview"
+    )
+
     sku_preview_rows = []
+
     for record in import_records:
-        for sku, quantity in record["sku_counts"].items():
-            sku_preview_rows.append({
-                "Load Ref": record["load_ref"],
-                "Date Submitted": record["date_submitted"],
-                "SKU": sku,
-                "Quantity": quantity,
-            })
+
+        for sku, quantity in record[
+            "sku_counts"
+        ].items():
+
+            sku_preview_rows.append(
+                {
+                    "Load Ref": record[
+                        "load_ref"
+                    ],
+                    "Date Submitted": record[
+                        "date_submitted"
+                    ],
+                    "SKU": sku,
+                    "Quantity": quantity,
+                }
+            )
 
     if sku_preview_rows:
-        st.dataframe(pd.DataFrame(sku_preview_rows), use_container_width=True, hide_index=True)
+
+        st.dataframe(
+            pd.DataFrame(sku_preview_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.divider()
-    st.warning("Importing will update the GitHub sku_counts_history.csv file.")
+
+    st.warning(
+        "Importing will update the GitHub "
+        "sku_counts_history.csv file."
+    )
 
     confirm_import = st.checkbox(
-        "I have checked the files above and want to add them to the load history.",
+        "I have checked the files above and want "
+        "to add them to the load history.",
         key="confirm_historic_import",
     )
 
     if not confirm_import:
-        st.info("Tick the confirmation box to enable the import.")
+
+        st.info(
+            "Tick the confirmation box to enable "
+            "the import."
+        )
+
         return
 
-    if st.button("📥 Import Historic Loads", type="primary", use_container_width=True, key="import_historic_button"):
+    if st.button(
+        "📥 Import Historic Loads",
+        type="primary",
+        use_container_width=True,
+        key="import_historic_button",
+    ):
+
         try:
-            with st.spinner("Checking existing load history..."):
-                history_df_before, _, _ = import_historic_csvs([])
+
+            with st.spinner(
+                "Checking existing load history..."
+            ):
+
+                history_df_before, _, _ = (
+                    import_historic_csvs([])
+                )
 
             existing_keys = set()
 
             for _, row in history_df_before.iterrows():
-                existing_load = str(row.get("Load Ref", "")).strip()
-                existing_date = normalise_history_date(row.get("Date Submitted", ""))
+
+                existing_load = str(
+                    row.get(
+                        "Load Ref",
+                        "",
+                    )
+                ).strip()
+
+                existing_date = (
+                    normalise_history_date(
+                        row.get(
+                            "Date Submitted",
+                            "",
+                        )
+                    )
+                )
+
                 if existing_load and existing_date:
-                    existing_keys.add((existing_load.lower(), existing_date))
+
+                    existing_keys.add(
+                        (
+                            existing_load.lower(),
+                            existing_date,
+                        )
+                    )
 
             records_to_import = []
             already_exists = []
 
             for record in import_records:
+
                 record_key = (
-                    str(record["load_ref"]).strip().lower(),
-                    normalise_history_date(record["date_submitted"]),
+                    str(
+                        record["load_ref"]
+                    ).strip().lower(),
+                    normalise_history_date(
+                        record["date_submitted"]
+                    ),
                 )
 
                 if record_key in existing_keys:
-                    already_exists.append(record)
+
+                    already_exists.append(
+                        record
+                    )
+
                 else:
-                    records_to_import.append(record)
-                    existing_keys.add(record_key)
+
+                    records_to_import.append(
+                        record
+                    )
+
+                    existing_keys.add(
+                        record_key
+                    )
 
             if not records_to_import:
-                st.info("All selected historic loads already exist in the load history. Nothing was imported.")
+
+                st.info(
+                    "All selected historic loads "
+                    "already exist in the load history. "
+                    "Nothing was imported."
+                )
+
                 return
 
-            with st.spinner("Adding historic loads to GitHub..."):
-                updated_history, added_records, skipped_records = import_historic_csvs(records_to_import)
+            with st.spinner(
+                "Adding historic loads to GitHub..."
+            ):
 
-            st.success(f"Successfully imported {len(added_records)} historic load(s).")
+                (
+                    updated_history,
+                    added_records,
+                    skipped_records,
+                ) = import_historic_csvs(
+                    records_to_import
+                )
+
+            st.success(
+                f"Successfully imported "
+                f"{len(added_records)} historic load(s)."
+            )
 
             if already_exists:
-                st.warning(f"{len(already_exists)} selected load(s) were skipped because they already exist in the history.")
-                skipped_display = pd.DataFrame([
-                    {
-                        "Filename": record["filename"],
-                        "Load Ref": record["load_ref"],
-                        "Date Submitted": record["date_submitted"],
-                        "Reason": "Already exists",
-                    }
-                    for record in already_exists
-                ])
-                st.dataframe(skipped_display, use_container_width=True, hide_index=True)
 
-            st.subheader("Updated Load History")
-            st.dataframe(updated_history, use_container_width=True, hide_index=True)
+                st.warning(
+                    f"{len(already_exists)} selected "
+                    "load(s) were skipped because "
+                    "they already exist in the history."
+                )
 
-            updated_history_csv = updated_history.to_csv(index=False, encoding="utf-8-sig")
+                skipped_display = pd.DataFrame(
+                    [
+                        {
+                            "Filename": record[
+                                "filename"
+                            ],
+                            "Load Ref": record[
+                                "load_ref"
+                            ],
+                            "Date Submitted": record[
+                                "date_submitted"
+                            ],
+                            "Reason": "Already exists",
+                        }
+                        for record in already_exists
+                    ]
+                )
+
+                st.dataframe(
+                    skipped_display,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.subheader(
+                "Updated Load History"
+            )
+
+            st.dataframe(
+                updated_history,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            updated_history_csv = (
+                updated_history.to_csv(
+                    index=False,
+                    encoding="utf-8-sig",
+                )
+            )
+
             st.download_button(
                 "Download Updated Load History",
-                data=updated_history_csv.encode("utf-8-sig"),
+                data=updated_history_csv.encode(
+                    "utf-8-sig"
+                ),
                 file_name=SKU_HISTORY_PATH,
                 mime="text/csv",
                 use_container_width=True,
             )
 
         except Exception as exc:
-            st.error(f"Historic import failed: {exc}")
+
+            st.error(
+                f"Historic import failed: {exc}"
+            )
 
 
 # ============================================================
@@ -1112,35 +2456,75 @@ def show_import():
 # ============================================================
 
 def show_contacts():
-    st.button("← Back to Home", key="contacts_back", on_click=go_to, args=("home",))
 
-    st.title("👥 Campeys Contact List")
-    st.caption("Contact information retrieved from the GitHub repository.")
+    st.button(
+        "← Back to Home",
+        key="contacts_back",
+        on_click=go_to,
+        args=("home",),
+    )
+
+    st.title(
+        "👥 Campeys Contact List"
+    )
+
+    st.caption(
+        "Contact information retrieved from "
+        "the GitHub repository."
+    )
 
     try:
-        contact_content, contact_metadata = get_github_file(CONTACT_LIST_PATH)
+
+        contact_content, contact_metadata = (
+            get_github_file(
+                CONTACT_LIST_PATH
+            )
+        )
 
         if not contact_content:
-            st.warning("The Campeys contact list could not be found in the GitHub repository.")
+
+            st.warning(
+                "The Campeys contact list could not "
+                "be found in the GitHub repository."
+            )
+
             return
 
-        st.text_area("Contact List", value=contact_content, height=500)
+        st.text_area(
+            "Contact List",
+            value=contact_content,
+            height=500,
+        )
 
         st.download_button(
             "Download Contact List",
-            data=contact_content.encode("utf-8"),
+            data=contact_content.encode(
+                "utf-8"
+            ),
             file_name=CONTACT_LIST_PATH,
             mime="text/plain",
             use_container_width=True,
         )
 
         if contact_metadata:
-            download_url = contact_metadata.get("download_url")
+
+            download_url = contact_metadata.get(
+                "download_url"
+            )
+
             if download_url:
-                st.link_button("Open Contact List from GitHub", download_url, use_container_width=True)
+
+                st.link_button(
+                    "Open Contact List from GitHub",
+                    download_url,
+                    use_container_width=True,
+                )
 
     except Exception as exc:
-        st.error(f"Unable to load the Campeys contact list: {exc}")
+
+        st.error(
+            f"Unable to load the Campeys contact list: {exc}"
+        )
 
 
 # ============================================================
@@ -1148,169 +2532,565 @@ def show_contacts():
 # ============================================================
 
 def show_sender():
-    st.button("← Back to Home", key="sender_back", on_click=go_to, args=("home",))
 
-    st.title("📦 KP to Campeys SSCC Sender")
-    st.caption("Convert WMS data, archive the CSV and maintain the SKU load history.")
+    st.button(
+        "← Back to Home",
+        key="sender_back",
+        on_click=go_to,
+        args=("home",),
+    )
 
+    st.title(
+        "📦 KP to Campeys SSCC Sender"
+    )
+
+    st.caption(
+        "Convert WMS data, archive the CSV and "
+        "maintain the SKU load history."
+    )
+
+    # --------------------------------------------------------
     # Initialize process state
+    # --------------------------------------------------------
+
     if "process_complete" not in st.session_state:
         st.session_state.process_complete = False
 
-    load_ref = st.text_input("Load Ref", placeholder="Enter load reference")
-    jde_order_ref = st.text_input("JDE Order Ref", placeholder="Enter JDE order reference")
-    wms_data = st.text_area("Paste WMS Data", height=350, placeholder="Paste the WMS export here...")
+    # --------------------------------------------------------
+    # Input fields
+    # --------------------------------------------------------
+
+    load_ref = st.text_input(
+        "Load Ref",
+        placeholder="Enter load reference",
+    )
+
+    jde_order_ref = st.text_input(
+        "JDE Order Ref",
+        placeholder="Enter JDE order reference",
+    )
+
+    wms_data = st.text_area(
+        "Paste WMS Data",
+        height=350,
+        placeholder="Paste the WMS export here...",
+    )
+
+    # --------------------------------------------------------
+    # PROCESS DATA
+    # --------------------------------------------------------
 
     if not st.session_state.process_complete:
-        process_button = st.button("Process & Archive", type="primary", use_container_width=True)
+
+        process_button = st.button(
+            "Process & Archive",
+            type="primary",
+            use_container_width=True,
+        )
+
         if not process_button:
             return
 
         if not load_ref.strip():
-            st.error("Please enter a Load Ref.")
+
+            st.error(
+                "Please enter a Load Ref."
+            )
+
             return
 
         if not jde_order_ref.strip():
-            st.error("Please enter a JDE Order Ref.")
+
+            st.error(
+                "Please enter a JDE Order Ref."
+            )
+
             return
 
         if not wms_data.strip():
-            st.error("Please paste the WMS data.")
+
+            st.error(
+                "Please paste the WMS data."
+            )
+
             return
 
         try:
-            df = read_wms_data(wms_data)
 
-            missing_columns = [column for column in EXPECTED_COLUMNS if column not in df.columns]
+            df = read_wms_data(
+                wms_data
+            )
+
+            missing_columns = [
+                column
+                for column in EXPECTED_COLUMNS
+                if column not in df.columns
+            ]
+
             if missing_columns:
-                st.error("The WMS data is missing the following columns:")
-                st.write(missing_columns)
+
+                st.error(
+                    "The WMS data is missing "
+                    "the following columns:"
+                )
+
+                st.write(
+                    missing_columns
+                )
+
                 return
 
-            df = df.copy().dropna(how="all")
-            df = df[~df["SSCC Code"].apply(is_summary_row)]
+            df = (
+                df.copy()
+                .dropna(how="all")
+            )
 
-            na_mask = df.map(is_explicit_na).any(axis=1)
+            df = df[
+                ~df["SSCC Code"].apply(
+                    is_summary_row
+                )
+            ]
+
+            na_mask = df.map(
+                is_explicit_na
+            ).any(axis=1)
+
             df = df[~na_mask]
 
-            london = pytz.timezone("Europe/London")
-            current_datetime = datetime.now(london).strftime("%d/%m/%Y %H:%M")
+            london = pytz.timezone(
+                "Europe/London"
+            )
 
-            df["Load Ref"] = load_ref.strip()
-            df["Date"] = current_datetime
-            df["Movement"] = jde_order_ref.strip()
+            current_datetime = (
+                datetime.now(
+                    london
+                ).strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+            )
 
-            output_df = df[FINAL_COLUMNS].copy()
-            sku_counts = output_df["Item Code"].astype(str).str.strip().value_counts().sort_index().to_dict()
+            df["Load Ref"] = (
+                load_ref.strip()
+            )
+
+            df["Date"] = (
+                current_datetime
+            )
+
+            df["Movement"] = (
+                jde_order_ref.strip()
+            )
+
+            output_df = df[
+                FINAL_COLUMNS
+            ].copy()
+
+            sku_counts = (
+                output_df["Item Code"]
+                .astype(str)
+                .str.strip()
+                .value_counts()
+                .sort_index()
+                .to_dict()
+            )
 
             csv_buffer = io.StringIO()
-            output_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-            csv_text = csv_buffer.getvalue()
 
-            timestamp = datetime.now(london).strftime("%Y%m%d_%H%M%S")
-            safe_load_ref = clean_filename(load_ref)
-            filename = f"{safe_load_ref}_{timestamp}.csv"
+            output_df.to_csv(
+                csv_buffer,
+                index=False,
+                encoding="utf-8-sig",
+            )
 
-            with st.spinner("Uploading CSV to GitHub..."):
-                github_result = upload_to_github(csv_text, filename)
+            csv_text = (
+                csv_buffer.getvalue()
+            )
 
-            with st.spinner("Updating SKU history..."):
-                history_df = update_sku_history(load_ref=load_ref.strip(), sku_counts=sku_counts)
+            timestamp = (
+                datetime.now(
+                    london
+                ).strftime(
+                    "%Y%m%d_%H%M%S"
+                )
+            )
 
-            st.session_state.csv_text = csv_text
-            st.session_state.filename = filename
-            st.session_state.sku_counts = sku_counts
-            st.session_state.load_ref = load_ref.strip()
-            st.session_state.process_complete = True
-            st.session_state.github_result = github_result
-            st.session_state.history_df = history_df
+            safe_load_ref = clean_filename(
+                load_ref
+            )
 
-            st.success("CSV archived and SKU history updated successfully.")
+            filename = (
+                f"{safe_load_ref}_"
+                f"{timestamp}.csv"
+            )
+
+            # ------------------------------------------------
+            # Upload CSV
+            # ------------------------------------------------
+
+            with st.spinner(
+                "Uploading CSV to GitHub..."
+            ):
+
+                github_result = upload_to_github(
+                    csv_text,
+                    filename,
+                )
+
+            # ------------------------------------------------
+            # Update SKU history
+            # ------------------------------------------------
+
+            with st.spinner(
+                "Updating SKU history..."
+            ):
+
+                history_df = update_sku_history(
+                    load_ref=load_ref.strip(),
+                    sku_counts=sku_counts,
+                )
+
+            # ------------------------------------------------
+            # Store process results
+            # ------------------------------------------------
+
+            st.session_state.csv_text = (
+                csv_text
+            )
+
+            st.session_state.filename = (
+                filename
+            )
+
+            st.session_state.sku_counts = (
+                sku_counts
+            )
+
+            st.session_state.load_ref = (
+                load_ref.strip()
+            )
+
+            st.session_state.process_complete = (
+                True
+            )
+
+            st.session_state.github_result = (
+                github_result
+            )
+
+            st.session_state.history_df = (
+                history_df
+            )
+
+            st.success(
+                "CSV archived and SKU history "
+                "updated successfully."
+            )
 
         except Exception as exc:
-            st.error(f"Processing failed: {exc}")
+
+            st.error(
+                f"Processing failed: {exc}"
+            )
+
             return
 
-    # If processing already complete, display the saved results
+    # ========================================================
+    # DISPLAY PROCESSED RESULTS
+    # ========================================================
+
     if st.session_state.process_complete:
-        history_df = st.session_state.get("history_df", pd.DataFrame())
-        github_result = st.session_state.get("github_result", {})
-        sku_counts = st.session_state.get("sku_counts", {})
-        csv_text = st.session_state.get("csv_text", "")
-        filename = st.session_state.get("filename", "")
-        load_ref = st.session_state.get("load_ref", "")
 
-        st.subheader("Archived CSV")
-        if github_result.get("file_url"):
-            st.link_button("Open Archived CSV on GitHub", github_result["file_url"], use_container_width=True)
+        history_df = st.session_state.get(
+            "history_df",
+            pd.DataFrame(),
+        )
 
-        if github_result.get("download_url"):
-            st.link_button("Download Archived CSV", github_result["download_url"], use_container_width=True)
+        github_result = st.session_state.get(
+            "github_result",
+            {},
+        )
 
-        st.subheader("SKU Counts")
-        st.dataframe(pd.DataFrame([sku_counts]), use_container_width=True, hide_index=True)
+        sku_counts = st.session_state.get(
+            "sku_counts",
+            {},
+        )
 
-        st.subheader("Load History")
-        st.dataframe(history_df, use_container_width=True, hide_index=True)
+        csv_text = st.session_state.get(
+            "csv_text",
+            "",
+        )
+
+        filename = st.session_state.get(
+            "filename",
+            "",
+        )
+
+        load_ref = st.session_state.get(
+            "load_ref",
+            "",
+        )
+
+        # ----------------------------------------------------
+        # Archived CSV
+        # ----------------------------------------------------
+
+        st.subheader(
+            "Archived CSV"
+        )
+
+        if github_result.get(
+            "file_url"
+        ):
+
+            st.link_button(
+                "Open Archived CSV on GitHub",
+                github_result["file_url"],
+                use_container_width=True,
+            )
+
+        if github_result.get(
+            "download_url"
+        ):
+
+            st.link_button(
+                "Download Archived CSV",
+                github_result["download_url"],
+                use_container_width=True,
+            )
+
+        # ----------------------------------------------------
+        # SKU Counts
+        # ----------------------------------------------------
+
+        st.subheader(
+            "SKU Counts"
+        )
+
+        st.dataframe(
+            pd.DataFrame([sku_counts]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ----------------------------------------------------
+        # Load History
+        # ----------------------------------------------------
+
+        st.subheader(
+            "Load History"
+        )
+
+        st.dataframe(
+            history_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ----------------------------------------------------
+        # Download CSV
+        # ----------------------------------------------------
 
         st.download_button(
             "Download CSV",
-            data=csv_text.encode("utf-8-sig"),
+            data=csv_text.encode(
+                "utf-8-sig"
+            ),
             file_name=filename,
             mime="text/csv",
             use_container_width=True,
         )
 
-        st.divider()
-        st.subheader("📧 Send Email with CSV")
-        st.markdown("Send the CSV to the Campeys team via Gmail.")
+        # ====================================================
+        # EMAIL
+        # ====================================================
 
-        st.write("**Select Recipients:**")
-        col_email1, col_email2, col_email3 = st.columns(3)
+        st.divider()
+
+        st.subheader(
+            "📧 Send Email with CSV"
+        )
+
+        st.markdown(
+            "Send the CSV to the selected recipients "
+            "via Gmail."
+        )
+
+        st.info(
+            "The email is sent from "
+            f"{GMAIL_ADDRESS}. "
+            "A successful message means Gmail accepted "
+            "the email for delivery; it does not guarantee "
+            "that the recipient's mailbox has received it."
+        )
+
+        st.write(
+            "**Select Recipients:**"
+        )
+
+        # ----------------------------------------------------
+        # Recipient checkboxes
+        # ----------------------------------------------------
+
+        col_email1, col_email2 = st.columns(2)
 
         with col_email1:
-            send_to_kpsnacks = st.checkbox("KP Snacks (kpsnacks@campeys.co.uk)", value=True, key="send_to_kpsnacks")
+
+            send_to_kpsnacks = st.checkbox(
+                "KP Snacks / Campeys (kpsnacks@campeys.co.uk)",
+                value=True,
+                key="send_to_kpsnacks",
+            )
+
+            send_to_luke = st.checkbox(
+                "Luke Oreilly (Luke.oreilly@kpsnacks.com)",
+                value=True,
+                key="send_to_luke",
+            )
+
+            send_to_grayson = st.checkbox(
+                "Grayson Swan (grayson.swan@kpsnacks.com)",
+                value=True,
+                key="send_to_grayson",
+            )
+
         with col_email2:
-            send_to_luke = st.checkbox("Luke Oreilly", value=True, key="send_to_luke")
-        with col_email3:
-            send_to_grayson = st.checkbox("Grayson Swan", value=True, key="send_to_grayson")
 
-        recipients = []
+            send_to_gmail = st.checkbox(
+                "My Gmail (kp.ponte.csv@gmail.com)",
+                value=False,
+                key="send_to_gmail",
+            )
+
+        # ----------------------------------------------------
+        # Build recipient lists
+        # ----------------------------------------------------
+
+        to_recipients = []
+        cc_recipients = []
+
+        # Main Campeys address goes in To
         if send_to_kpsnacks:
-            recipients.append(EMAIL_TO)
-        if send_to_luke:
-            recipients.append(EMAIL_CC[0])
-        if send_to_grayson:
-            recipients.append(EMAIL_CC[1])
 
-        if not recipients:
-            st.warning("Please select at least one recipient.")
+            to_recipients.append(
+                EMAIL_TO
+            )
+
+        # The other recipients go into CC
+        if send_to_luke:
+
+            cc_recipients.append(
+                LUKE_EMAIL
+            )
+
+        if send_to_grayson:
+
+            cc_recipients.append(
+                GRAYSON_EMAIL
+            )
+
+        # Gmail test address
+        if send_to_gmail:
+
+            cc_recipients.append(
+                GMAIL_ADDRESS
+            )
+
+        # ----------------------------------------------------
+        # Display selected recipients
+        # ----------------------------------------------------
+
+        selected_recipients = (
+            to_recipients
+            + cc_recipients
+        )
+
+        if selected_recipients:
+
+            st.write(
+                "**Selected recipients:**"
+            )
+
+            for recipient in selected_recipients:
+
+                st.write(
+                    f"• {recipient}"
+                )
+
         else:
-            if st.button("📧 Send Email with CSV", type="primary", use_container_width=True, key="send_email_button"):
-                email_subject = f"CSV File - Load Ref {load_ref.strip()}"
+
+            st.warning(
+                "Please select at least one recipient."
+            )
+
+        # ----------------------------------------------------
+        # Send email
+        # ----------------------------------------------------
+
+        if selected_recipients:
+
+            if st.button(
+                "📧 Send Email with CSV",
+                type="primary",
+                use_container_width=True,
+                key="send_email_button",
+            ):
+
+                email_subject = (
+                    f"CSV File - Load Ref "
+                    f"{load_ref.strip()}"
+                )
 
                 email_body = (
                     "Hi,\n\n"
-                    f"Please find attached the CSV file for load ref {load_ref.strip()}.\n\n"
+                    f"Please find attached the CSV file "
+                    f"for load ref "
+                    f"{load_ref.strip()}.\n\n"
                     "SKU Counts:\n\n"
                 )
-                for sku, count in sku_counts.items():
-                    email_body += f"{sku}: {count}\n"
-                email_body += "\n\nThanks"
 
-                with st.spinner("Sending email..."):
-                    success = send_email_with_smtp(
-                        recipients,
-                        email_subject,
-                        email_body,
-                        csv_text,
-                        filename,
+                for sku, count in sku_counts.items():
+
+                    email_body += (
+                        f"{sku}: {count}\n"
+                    )
+
+                email_body += (
+                    "\n\nThanks"
+                )
+
+                with st.spinner(
+                    "Sending email through Gmail..."
+                ):
+
+                    success, message = (
+                        send_email_with_smtp(
+                            to_recipients=to_recipients,
+                            cc_recipients=cc_recipients,
+                            subject=email_subject,
+                            body=email_body,
+                            csv_content=csv_text,
+                            csv_filename=filename,
+                        )
                     )
 
                 if success:
-                    st.success(f"✅ Email sent successfully to {len(recipients)} recipient(s).")
+
+                    st.success(
+                        f"✅ {message}"
+                    )
+
+                    st.caption(
+                        "If a recipient does not receive "
+                        "the email, check their Junk/Spam "
+                        "folder and their organisation's "
+                        "Microsoft 365 quarantine/filtering."
+                    )
+
                 else:
-                    st.error("❌ Failed to send email. Check your secrets configuration.")
+
+                    st.error(
+                        f"❌ {message}"
+                    )
 
 
 # ============================================================
@@ -1318,20 +3098,26 @@ def show_sender():
 # ============================================================
 
 if st.session_state.page == "home":
+
     show_home()
 
 elif st.session_state.page == "sender":
+
     show_sender()
 
 elif st.session_state.page == "history":
+
     show_history()
 
 elif st.session_state.page == "import":
+
     show_import()
 
 elif st.session_state.page == "contacts":
+
     show_contacts()
 
 else:
+
     st.session_state.page = "home"
     st.rerun()
