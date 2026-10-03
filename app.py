@@ -176,6 +176,15 @@ if "sku_counts" not in st.session_state:
 if "load_ref" not in st.session_state:
     st.session_state.load_ref = ""
 
+if "output_df" not in st.session_state:
+    st.session_state.output_df = pd.DataFrame()
+
+if "github_result" not in st.session_state:
+    st.session_state.github_result = {}
+
+if "history_df" not in st.session_state:
+    st.session_state.history_df = pd.DataFrame()
+
 
 def go_to(page_name):
     st.session_state.page = page_name
@@ -186,6 +195,9 @@ def go_to(page_name):
         st.session_state.filename = ""
         st.session_state.sku_counts = {}
         st.session_state.load_ref = ""
+        st.session_state.output_df = pd.DataFrame()
+        st.session_state.github_result = {}
+        st.session_state.history_df = pd.DataFrame()
 
 
 # ============================================================
@@ -1026,37 +1038,57 @@ def extract_historic_csv_data(
             "a usable Date or Date Submitted."
         )
 
-    df = df.dropna(how="all")
+    # --------------------------------------------------------
+    # Clean historic data
+    # --------------------------------------------------------
 
-    if "SSCC Code" in df.columns:
+    df = df.dropna(how="all").copy()
 
-        df = df[
-            ~df["SSCC Code"].apply(
-                is_summary_row
-            )
-        ]
+    for column in df.columns:
 
-    na_mask = df.map(
-        is_explicit_na
-    ).any(axis=1)
+        df[column] = df[column].apply(
+            lambda value:
+            value.strip()
+            if isinstance(value, str)
+            else value
+        )
 
-    df = df[~na_mask]
+    # Only retain rows with a genuine Item Code.
+    # This removes blank/NA/summary rows even if
+    # another column contains a total quantity.
+
+    item_valid_mask = df[
+        "Item Code"
+    ].apply(
+        is_valid_data_value
+    )
+
+    df = df.loc[
+        item_valid_mask
+    ].copy()
+
+    df = df[
+        ~df["Item Code"].apply(
+            is_summary_row
+        )
+    ].copy()
+
+    if df.empty:
+
+        raise ValueError(
+            f"{uploaded_file.name} contains no usable "
+            "Item Code rows after filtering blank, "
+            "NA and summary/total rows."
+        )
 
     item_codes = (
         df["Item Code"]
-        .dropna()
         .astype(str)
         .str.strip()
     )
 
     item_codes = item_codes[
-        ~item_codes.str.lower().isin(
-            [
-                "",
-                "nan",
-                "none",
-            ]
-        )
+        item_codes != ""
     ]
 
     if item_codes.empty:
@@ -1352,20 +1384,75 @@ def is_summary_row(value):
     )
 
 
-def is_explicit_na(value):
+def is_blank_or_na(value):
+    """
+    Return True when a cell is blank or contains
+    a recognised NA/null value.
+    """
 
     if pd.isna(value):
-        return False
+        return True
 
     text = str(value).strip().lower()
 
     return text in [
+        "",
         "na",
         "n/a",
         "#n/a",
+        "nan",
         "null",
         "none",
     ]
+
+
+def is_valid_data_value(value):
+    """
+    Return True when a cell contains an actual
+    usable value.
+    """
+
+    return not is_blank_or_na(value)
+
+
+def is_valid_wms_load_row(row):
+    """
+    A valid WMS load row must contain both:
+
+    - a genuine SSCC Code
+    - a genuine Item Code
+
+    This deliberately does not require every other
+    column to be populated because optional fields
+    can legitimately be blank.
+
+    Rows containing Total/Subtotal/Summary in the
+    identifying fields are also rejected.
+    """
+
+    sscc = row.get(
+        "SSCC Code",
+        "",
+    )
+
+    item_code = row.get(
+        "Item Code",
+        "",
+    )
+
+    if not is_valid_data_value(sscc):
+        return False
+
+    if not is_valid_data_value(item_code):
+        return False
+
+    if is_summary_row(sscc):
+        return False
+
+    if is_summary_row(item_code):
+        return False
+
+    return True
 
 
 def read_wms_data(raw_text):
@@ -2640,22 +2727,62 @@ def show_sender():
 
                 return
 
+            # ------------------------------------------------
+            # Clean WMS data
+            # ------------------------------------------------
+
             df = (
                 df.copy()
                 .dropna(how="all")
             )
 
-            df = df[
-                ~df["SSCC Code"].apply(
-                    is_summary_row
+            # Strip whitespace from text cells
+            for column in df.columns:
+
+                df[column] = df[column].apply(
+                    lambda value:
+                    value.strip()
+                    if isinstance(value, str)
+                    else value
                 )
-            ]
 
-            na_mask = df.map(
-                is_explicit_na
-            ).any(axis=1)
+            # ------------------------------------------------
+            # IMPORTANT:
+            #
+            # Only retain rows that contain both a valid
+            # SSCC Code and a valid Item Code.
+            #
+            # This removes final WMS summary rows such as:
+            #
+            # SSCC Code = NA
+            # Item Code = NA
+            # Units = 1234
+            #
+            # The entire row is discarded rather than
+            # accidentally creating a Campeys row with
+            # blank cells and a total quantity.
+            # ------------------------------------------------
 
-            df = df[~na_mask]
+            valid_row_mask = df.apply(
+                is_valid_wms_load_row,
+                axis=1,
+            )
+
+            df = df.loc[
+                valid_row_mask
+            ].copy()
+
+            if df.empty:
+
+                raise ValueError(
+                    "No valid WMS load rows were found "
+                    "after removing blank, NA and "
+                    "summary/total rows."
+                )
+
+            # ------------------------------------------------
+            # London date/time
+            # ------------------------------------------------
 
             london = pytz.timezone(
                 "Europe/London"
@@ -2669,6 +2796,10 @@ def show_sender():
                 )
             )
 
+            # ------------------------------------------------
+            # Add required output fields
+            # ------------------------------------------------
+
             df["Load Ref"] = (
                 load_ref.strip()
             )
@@ -2681,18 +2812,54 @@ def show_sender():
                 jde_order_ref.strip()
             )
 
+            # ------------------------------------------------
+            # Build final Campeys dataframe
+            # ------------------------------------------------
+
             output_df = df[
                 FINAL_COLUMNS
             ].copy()
 
+            # ------------------------------------------------
+            # Final safety check on Item Code
+            # ------------------------------------------------
+
+            valid_item_codes = output_df[
+                "Item Code"
+            ].apply(
+                lambda value:
+                str(value).strip()
+                if is_valid_data_value(value)
+                else ""
+            )
+
+            valid_item_codes = (
+                valid_item_codes[
+                    valid_item_codes != ""
+                ]
+            )
+
+            if valid_item_codes.empty:
+
+                raise ValueError(
+                    "No valid Item Codes were found "
+                    "in the converted load."
+                )
+
+            # ------------------------------------------------
+            # SKU counts
+            # ------------------------------------------------
+
             sku_counts = (
-                output_df["Item Code"]
-                .astype(str)
-                .str.strip()
+                valid_item_codes
                 .value_counts()
                 .sort_index()
                 .to_dict()
             )
+
+            # ------------------------------------------------
+            # Generate CSV
+            # ------------------------------------------------
 
             csv_buffer = io.StringIO()
 
@@ -2705,6 +2872,10 @@ def show_sender():
             csv_text = (
                 csv_buffer.getvalue()
             )
+
+            # ------------------------------------------------
+            # Filename
+            # ------------------------------------------------
 
             timestamp = (
                 datetime.now(
@@ -2724,7 +2895,13 @@ def show_sender():
             )
 
             # ------------------------------------------------
-            # Upload CSV
+            # Upload CSV to GitHub
+            #
+            # This still happens in the background so the
+            # Load History screen can access archived loads.
+            #
+            # The GitHub links are deliberately NOT displayed
+            # on the conversion results page.
             # ------------------------------------------------
 
             with st.spinner(
@@ -2769,10 +2946,18 @@ def show_sender():
                 load_ref.strip()
             )
 
+            # Store the complete converted dataframe
+            # so it can be displayed after processing.
+            st.session_state.output_df = (
+                output_df.copy()
+            )
+
             st.session_state.process_complete = (
                 True
             )
 
+            # Keep these internally for archiving/history.
+            # They are NOT displayed on the conversion page.
             st.session_state.github_result = (
                 github_result
             )
@@ -2785,6 +2970,10 @@ def show_sender():
                 "CSV archived and SKU history "
                 "updated successfully."
             )
+
+            # Rerun so the processed results are displayed
+            # cleanly from the saved session state.
+            st.rerun()
 
         except Exception as exc:
 
@@ -2799,16 +2988,6 @@ def show_sender():
     # ========================================================
 
     if st.session_state.process_complete:
-
-        history_df = st.session_state.get(
-            "history_df",
-            pd.DataFrame(),
-        )
-
-        github_result = st.session_state.get(
-            "github_result",
-            {},
-        )
 
         sku_counts = st.session_state.get(
             "sku_counts",
@@ -2830,32 +3009,35 @@ def show_sender():
             "",
         )
 
+        output_df = st.session_state.get(
+            "output_df",
+            pd.DataFrame(),
+        )
+
         # ----------------------------------------------------
-        # Archived CSV
+        # Converted Campeys CSV
         # ----------------------------------------------------
 
         st.subheader(
-            "Archived CSV"
+            "Converted Campeys CSV"
         )
 
-        if github_result.get(
-            "file_url"
-        ):
+        if not output_df.empty:
 
-            st.link_button(
-                "Open Archived CSV on GitHub",
-                github_result["file_url"],
-                use_container_width=True,
+            st.caption(
+                f"{len(output_df)} valid load row(s) converted."
             )
 
-        if github_result.get(
-            "download_url"
-        ):
-
-            st.link_button(
-                "Download Archived CSV",
-                github_result["download_url"],
+            st.dataframe(
+                output_df,
                 use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+
+            st.warning(
+                "The converted CSV data is not available."
             )
 
         # ----------------------------------------------------
@@ -2866,29 +3048,40 @@ def show_sender():
             "SKU Counts"
         )
 
-        st.dataframe(
-            pd.DataFrame([sku_counts]),
-            use_container_width=True,
-            hide_index=True,
-        )
+        if sku_counts:
 
-        # ----------------------------------------------------
-        # Load History
-        # ----------------------------------------------------
+            sku_counts_df = pd.DataFrame(
+                list(
+                    sku_counts.items()
+                ),
+                columns=[
+                    "Item Code",
+                    "Count",
+                ],
+            )
 
-        st.subheader(
-            "Load History"
-        )
+            st.dataframe(
+                sku_counts_df,
+                use_container_width=True,
+                hide_index=True,
+            )
 
-        st.dataframe(
-            history_df,
-            use_container_width=True,
-            hide_index=True,
-        )
+        else:
+
+            st.info(
+                "No SKU counts are available."
+            )
 
         # ----------------------------------------------------
         # Download CSV
+        #
+        # This is the only CSV download shown on the
+        # conversion results page.
         # ----------------------------------------------------
+
+        st.subheader(
+            "Download"
+        )
 
         st.download_button(
             "Download CSV",
