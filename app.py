@@ -3,6 +3,11 @@ import io
 import re
 import urllib.parse
 from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email import encoders
 
 import pandas as pd
 import pytz
@@ -55,6 +60,8 @@ EMAIL_CC = [
     "Luke.oreilly@kpsnacks.com",
     "grayson.swan@kpsnacks.com",
 ]
+
+GMAIL_ADDRESS = "kp.ponte.csv@gmail.com"
 
 AUTOSTORE_URL = (
     "https://autostore-live.snacks.local/app"
@@ -157,6 +164,56 @@ def go_to(page_name):
 
 
 # ============================================================
+# GMAIL SMTP FUNCTIONS
+# ============================================================
+
+def send_email_with_smtp(recipients, subject, body, csv_content, csv_filename):
+    """Send email with CSV attachment using Gmail SMTP."""
+    
+    try:
+        gmail_password = st.secrets.get("gmail_password")
+
+        if not gmail_password:
+            st.error(
+                "❌ Gmail password not configured in Streamlit Secrets. "
+                "Add 'gmail_password' to your secrets."
+            )
+            return False
+
+        # Create email message
+        msg = MIMEMultipart()
+        msg["From"] = GMAIL_ADDRESS
+        msg["To"] = ", ".join(recipients)
+        msg["Subject"] = subject
+
+        # Attach body
+        msg.attach(MIMEText(body, "plain"))
+
+        # Attach CSV file
+        csv_attachment = MIMEBase("application", "octet-stream")
+        csv_attachment.set_payload(csv_content.encode("utf-8-sig"))
+        encoders.encode_base64(csv_attachment)
+        csv_attachment.add_header(
+            "Content-Disposition",
+            f"attachment; filename= {csv_filename}",
+        )
+        msg.attach(csv_attachment)
+
+        # Send email via Gmail SMTP
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(GMAIL_ADDRESS, gmail_password)
+        server.send_message(msg)
+        server.quit()
+
+        return True
+
+    except Exception as exc:
+        st.error(f"Failed to send email: {exc}")
+        return False
+
+
+# ============================================================
 # GITHUB FUNCTIONS
 # ============================================================
 
@@ -182,8 +239,7 @@ def get_github_settings():
         return None, None, None
 
 
-def get_github_connection():
-    """Validate GitHub token and repository."""
+def get and repository."""
 
     token, username, repo = get_github_settings()
 
@@ -279,20 +335,9 @@ def get_github_file(file_path):
         file_response = requests.get(
             download_url,
             timeout=20,
-        )
-
-        if file_response.status_code != 200:
-            raise RuntimeError(
-                f"Unable to download GitHub file "
-                f"({file_response.status_code})."
-            )
-
-        content = file_response.text
-
-    return content, data
 
 
-def list_saved_load_files():
+def_saved_load_files():
     """List archived CSV files in the saved_loads GitHub folder."""
     try:
         headers, owner, repo = get_github_connection()
@@ -334,97 +379,7 @@ def find_saved_load_file_for_load_ref(load_ref, saved_files=None):
     if not raw_load_ref or raw_load_ref.lower() in ["nan", "none"]:
         return None
 
-    lookup_name = clean_filename(raw_load_ref).lower()
-    if not lookup_name:
-        return None
-
-    file_list = saved_files if saved_files is not None else list_saved_load_files()
-
-    for file_name in file_list:
-        lower_name = file_name.lower()
-        stem = lower_name[:-4] if lower_name.endswith(".csv") else lower_name
-
-        if stem.startswith(f"{lookup_name}_"):
-            return file_name
-
-        if lower_name == f"{lookup_name}.csv":
-            return file_name
-
-    return None
-
-
-def upload_github_file(
-    file_path,
-    file_content,
-    commit_message,
-):
-    """Create or update a file in GitHub."""
-
-    headers, owner, repo = get_github_connection()
-
-    encoded_path = urllib.parse.quote(
-        file_path,
-        safe="/",
-    )
-
-    url = (
-        f"https://api.github.com/repos/"
-        f"{owner}/{repo}/contents/{encoded_path}"
-    )
-
-    existing_response = requests.get(
-        f"{url}?ref={GITHUB_BRANCH}",
-        headers=headers,
-        timeout=20,
-    )
-
-    sha = None
-
-    if existing_response.status_code == 200:
-
-        sha = existing_response.json().get(
-            "sha"
-        )
-
-    elif existing_response.status_code != 404:
-
-        raise RuntimeError(
-            f"GitHub file path check failed "
-            f"({existing_response.status_code}): "
-            f"{existing_response.text}"
-        )
-
-    encoded_content = base64.b64encode(
-        file_content.encode("utf-8")
-    ).decode("ascii")
-
-    payload = {
-        "message": commit_message,
-        "content": encoded_content,
-        "branch": GITHUB_BRANCH,
-    }
-
-    if sha:
-        payload["sha"] = sha
-
-    response = requests.put(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=30,
-    )
-
-    if response.status_code not in (200, 201):
-
-        raise RuntimeError(
-            f"GitHub upload failed "
-            f"({response.status_code}): "
-            f"{response.text}"
-        )
-
-    result = response.json()
-
-    return {
+    lookup_name = clean_filename {
         "file_url": result.get(
             "content",
             {},
@@ -1352,17 +1307,7 @@ def show_home():
 
         st.markdown(
             '<div class="tool-icon">👥</div>',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            '<div class="tool-title">'
-            'Campeys Contact List'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
+            unsafe_allow_html=True,markdown(
             '<div class="tool-description">'
             'View the Campeys contact list stored '
             'in the GitHub repository.'
@@ -2346,10 +2291,7 @@ def show_sender():
 
     st.caption(
         "Convert WMS data, archive the CSV and "
-        "maintain the SKU load history."
-    )
-
-    load_ref = st.text_input(
+        " = st.text_input(
         "Load Ref",
         placeholder="Enter load reference",
     )
@@ -2452,15 +2394,7 @@ def show_sender():
 
         current_datetime = datetime.now(
             london
-        ).strftime(
-            "%d/%m/%Y %H:%M"
-        )
-
-        df["Load Ref"] = (
-            load_ref.strip()
-        )
-
-        df["Date"] = (
+        ). = (
             current_datetime
         )
 
@@ -2597,73 +2531,103 @@ def show_sender():
             use_container_width=True,
         )
 
-        csv_download_url = (
-            github_result.get(
-                "file_url"
-            )
-            or github_result.get(
-                "download_url"
-            )
-            or ""
-        )
+        # ========================================================
+        # EMAIL SECTION WITH RECIPIENT SELECTION
+        # ========================================================
 
-        sku_headers = "\t".join(
-            str(key)
-            for key in sku_counts.keys()
-        )
-
-        sku_values = "\t".join(
-            str(value)
-            for value in sku_counts.values()
-        )
-
-        sku_table_text = (
-            f"{sku_headers}\n"
-            f"{sku_values}"
-        )
-
-        email_subject = (
-            f"CSV File - Load Ref "
-            f"{load_ref.strip()}"
-        )
-
-        email_body = (
-            "Hi\n\n"
-            f"Please download the CSV file "
-            f"for load ref {load_ref.strip()} "
-            f"at the following link:\n\n"
-            f"{csv_download_url}\n\n"
-            "SKU Counts:\n\n"
-            f"{sku_table_text}\n\n"
-            "Thanks"
-        )
-
-        cc_value = ",".join(
-            EMAIL_CC
-        )
-
-        mailto_url = (
-            f"mailto:{EMAIL_TO}"
-            f"?cc={urllib.parse.quote(cc_value)}"
-            f"&subject="
-            f"{urllib.parse.quote(email_subject)}"
-            f"&body="
-            f"{urllib.parse.quote(email_body)}"
-        )
+        st.divider()
 
         st.subheader(
-            "Email"
+            "📧 Send Email with CSV"
         )
 
         st.markdown(
-            "The CSV is ready to send to the "
-            "Campeys team."
+            "Send the CSV to the Campeys team via Gmail."
         )
 
-        st.markdown(
-            f"[📧 Open Email in Outlook]"
-            f"({mailto_url})"
-        )
+        # --------------------------------------------------------
+        # EMAIL RECIPIENT SELECTION
+        # --------------------------------------------------------
+
+        st.write("**Select Recipients:**")
+
+        col_email1, col_email2, col_email3 = st.columns(3)
+
+        with col_email1:
+            send_to_kpsnacks = st.checkbox(
+                "KP Snacks (kpsnacks@campeys.co.uk)",
+                value=True,
+                key="send_to_kpsnacks",
+            )
+
+        with col_email2:
+            send_to_luke = st.checkbox(
+                "Luke Oreilly",
+                value=True,
+                key="send_to_luke",
+            )
+
+        with col_email3:
+            send_to_grayson = st.checkbox(
+                "Grayson Swan",
+                value=True,
+                key="send_to_grayson",
+            )
+
+        # --------------------------------------------------------
+        # BUILD RECIPIENT LIST
+        # --------------------------------------------------------
+
+        recipients = []
+
+        if send_to_kpsnacks:
+            recipients.append(EMAIL_TO)
+
+        if send_to_luke:
+            recipients.append(EMAIL_CC[0])
+
+        if send_to_grayson:
+            recipients.append(EMAIL_CC[1])
+
+        if not recipients:
+            st.warning("Please select at least one recipient.")
+        else:
+            # --------------------------------------------------------
+            # SEND EMAIL VIA GMAIL SMTP
+            # --------------------------------------------------------
+
+            if st.button(
+                "📧 Send Email with CSV",
+                type="primary",
+                use_container_width=True,
+                key="send_email_button",
+            ):
+
+                email_subject = (
+                    f"CSV File - Load Ref {load_ref.strip()}"
+                )
+
+                email_body = (
+                     in sku_counts.items():
+                    email_body += f"{sku}: {count}\n"
+
+                email_body += "\n\nThanks"
+
+                with st.spinner("Sending email..."):
+                    success = send_email_with_smtp(
+                        recipients,
+                        email_subject,
+                        email_body,
+                        csv_text,
+                        filename,
+                    )
+
+                if success:
+                    st.success(
+                        f"✅ Email sent successfully to {len(recipients)} recipient(s)."
+                    )
+                else:
+                    st.error("❌ Failed to send email. Check your secrets configuration.")
 
     except Exception as exc:
 
@@ -2688,15 +2652,5 @@ elif st.session_state.page == "history":
 
     show_history()
 
-elif st.session_state.page == "import":
-
-    show_import()
-
-elif st.session_state.page == "contacts":
-
-    show_contacts()
-
-else:
-
-    st.session_state.page = "home"
+elif st.session = "home"
     st.rerun()
