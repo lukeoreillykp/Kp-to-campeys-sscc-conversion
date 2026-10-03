@@ -93,6 +93,7 @@ DEFAULT_SESSION_STATE = {
     "github_result": None,
     "history_df": None,
     "planner_week": None,
+    "planner_selected_slot_id": None,
 }
 
 for key, value in DEFAULT_SESSION_STATE.items():
@@ -117,46 +118,6 @@ st.markdown(
         font-weight: 600;
     }
 
-    .planner-cell {
-        border-radius: 8px;
-        padding: 10px 6px;
-        text-align: center;
-        min-height: 62px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        margin-bottom: 4px;
-        border: 1px solid #d0d0d0;
-    }
-
-    .planner-pending {
-        background-color: #f2f2f2;
-        color: #222;
-    }
-
-    .planner-assigned {
-        background-color: #d9ead3;
-        color: #274e13;
-        border: 2px solid #70ad47;
-    }
-
-    .planner-cancelled {
-        background-color: #f4cccc;
-        color: #990000;
-        border: 2px solid #cc0000;
-    }
-
-    .planner-time {
-        font-size: 0.75rem;
-        color: #666;
-        margin-bottom: 3px;
-    }
-
-    .planner-value {
-        font-size: 1.15rem;
-        font-weight: 700;
-    }
-
     .planner-day-header {
         text-align: center;
         font-weight: 700;
@@ -167,7 +128,49 @@ st.markdown(
     }
 
     .planner-empty {
-        min-height: 62px;
+        min-height: 72px;
+    }
+
+    [class*="st-key-planner_cell_pending_"] button,
+    [class*="st-key-planner_cell_assigned_"] button,
+    [class*="st-key-planner_cell_cancelled_"] button {
+        min-height: 76px;
+        height: 76px;
+        width: 100%;
+        font-size: 1.25rem;
+        font-weight: 800;
+        border-radius: 8px;
+        margin-bottom: 4px;
+    }
+
+    [class*="st-key-planner_cell_pending_"] button {
+        background: #f2f2f2;
+        color: #222;
+        border: 1px solid #cfcfcf;
+    }
+
+    [class*="st-key-planner_cell_assigned_"] button {
+        background: #d9ead3;
+        color: #274e13;
+        border: 2px solid #70ad47;
+    }
+
+    [class*="st-key-planner_cell_cancelled_"] button {
+        background: #f4cccc;
+        color: #990000;
+        border: 2px solid #cc0000;
+    }
+
+    [class*="st-key-planner_cell_pending_"] button:hover,
+    [class*="st-key-planner_cell_assigned_"] button:hover,
+    [class*="st-key-planner_cell_cancelled_"] button:hover {
+        filter: brightness(0.97);
+    }
+
+    .planner-selected-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+        margin-bottom: 0.35rem;
     }
 
     div[data-testid="stExpander"] {
@@ -578,13 +581,11 @@ def process_wms_dataframe(df):
     df["Load Ref"] = df["Load Ref"].apply(make_clean_load_ref)
     df["SSCC"] = df["SSCC"].apply(make_clean_sscc)
 
-    # Remove blank rows
     df = df[
         (df["SSCC"] != "")
         & (df["Item Code"] != "")
     ].copy()
 
-    # Remove common summary rows
     summary_pattern = (
         r"^\s*(total|totals|summary|grand total|"
         r"sub[- ]?total)\s*$"
@@ -776,9 +777,7 @@ def show_sender():
             with st.spinner("Processing WMS file..."):
                 df = read_wms_file(uploaded_file)
 
-                output_df, load_ref = process_wms_dataframe(
-                    df
-                )
+                output_df, load_ref = process_wms_dataframe(df)
 
                 sku_counts = (
                     output_df
@@ -957,19 +956,6 @@ def normalise_date_only(value):
 
 
 def parse_time_value(value):
-    """
-    Accepts the existing Campeys workbook time format.
-
-    Examples:
-        datetime.time(15, 0)
-        datetime.time(22, 0)
-        "15:00"
-        "22:00"
-        "3:00 PM"
-        Excel fractional time values
-        pandas Timestamp
-    """
-
     if value is None:
         return None
 
@@ -979,15 +965,12 @@ def parse_time_value(value):
     except Exception:
         pass
 
-    # Actual Excel/Python time object.
     if isinstance(value, time):
         return value.strftime("%H:%M")
 
-    # Actual datetime / pandas timestamp.
     if isinstance(value, (datetime, pd.Timestamp)):
         return value.strftime("%H:%M")
 
-    # Excel fractional day.
     if isinstance(value, (int, float)):
         number = float(value)
 
@@ -1014,7 +997,6 @@ def parse_time_value(value):
     if not text:
         return None
 
-    # Direct HH:MM or HH:MM:SS.
     match = re.fullmatch(
         r"(\d{1,2}):(\d{2})(?::(\d{2}))?",
         text,
@@ -1033,7 +1015,6 @@ def parse_time_value(value):
                 f"{minutes:02d}"
             )
 
-    # 12-hour time such as 3:00 PM.
     parsed = pd.to_datetime(
         text,
         errors="coerce",
@@ -1042,7 +1023,6 @@ def parse_time_value(value):
     if pd.notna(parsed):
         return parsed.strftime("%H:%M")
 
-    # Search within a string.
     match = re.search(
         r"\b(\d{1,2}):(\d{2})\s*([APap][Mm])?\b",
         text,
@@ -1179,13 +1159,6 @@ def save_planner_data(planner_data):
 # ============================================================
 
 def load_archived_loads():
-    """
-    Read archived sender CSVs from saved_loads/.
-
-    Only archived CSVs are used to assign planner load refs.
-    sku_counts_history.csv is deliberately not used.
-    """
-
     files = list_saved_load_files()
 
     archived = []
@@ -1286,16 +1259,6 @@ def sync_planner_with_archived_loads(
     planner_data,
     archived_loads,
 ):
-    """
-    For each date:
-      1. Sort archived CSVs chronologically.
-      2. Sort planner slots chronologically.
-      3. Assign each unassigned archived load to the first
-         still-pending planner slot.
-
-    Existing assigned/cancelled slots are never overwritten.
-    """
-
     slots = planner_data.get(
         "slots",
         [],
@@ -1303,7 +1266,6 @@ def sync_planner_with_archived_loads(
 
     changed = False
 
-    # Loads already tied to a planner slot are considered used.
     used_load_refs = {
         str(slot.get("load_ref")).strip()
         for slot in slots
@@ -1326,8 +1288,7 @@ def sync_planner_with_archived_loads(
         day_slots = [
             slot
             for slot in slots
-            if slot.get("collection_date")
-            == date_key
+            if slot.get("collection_date") == date_key
         ]
 
         day_slots.sort(
@@ -1360,8 +1321,7 @@ def sync_planner_with_archived_loads(
                 (
                     slot
                     for slot in day_slots
-                    if slot.get("status")
-                    == "pending"
+                    if slot.get("status") == "pending"
                     and not slot.get("load_ref")
                 ),
                 None,
@@ -1394,19 +1354,6 @@ def sync_planner_with_archived_loads(
 # ============================================================
 
 def find_header_row(raw_df):
-    """
-    Find the existing Campeys header row.
-
-    The supplied workbook has:
-        row 1 - KP Pontefract
-        row 2 - weekday / notes
-        row 3 - blank
-        row 4 - headers
-
-    Therefore the function searches for a row containing
-    Date + Planned Time.
-    """
-
     for row_index in range(
         min(len(raw_df), 20)
     ):
@@ -1442,23 +1389,6 @@ def parse_campeys_request_sheet(
     raw_df,
     sheet_name,
 ):
-    """
-    Parse the actual KP Pontefract / Campeys workbook.
-
-    The relevant columns are:
-
-        Date
-        Del Site
-        Planned Time
-        Pallets
-        ...
-
-    Planned Time is the collection time.
-
-    Collection Time is deliberately NOT used because
-    it is normally blank in the request workbook.
-    """
-
     header_row = find_header_row(
         raw_df
     )
@@ -1481,7 +1411,6 @@ def parse_campeys_request_sheet(
 
     data.columns = headers
 
-    # Remove completely blank column names.
     data = data.loc[
         :,
         [
@@ -1501,8 +1430,6 @@ def parse_campeys_request_sheet(
         ["Del Site"],
     )
 
-    # IMPORTANT:
-    # Planned Time is the real request time.
     planned_time_col = find_column(
         data,
         [
@@ -1531,8 +1458,6 @@ def parse_campeys_request_sheet(
         ):
             continue
 
-        # Only import Campeys rows for the
-        # Campeys planner.
         if site_col:
             site = str(
                 row.get(site_col, "")
@@ -1546,9 +1471,7 @@ def parse_campeys_request_sheet(
                 "collection_date": (
                     collection_date.isoformat()
                 ),
-                "collection_time": (
-                    collection_time
-                ),
+                "collection_time": collection_time,
                 "source": (
                     f"Campey Transport Requests - "
                     f"{str(sheet_name).strip()}"
@@ -1562,12 +1485,6 @@ def parse_campeys_request_sheet(
 def parse_collection_requests_workbook(
     uploaded_file,
 ):
-    """
-    Import the user's existing workbook format.
-
-    Every worksheet is inspected independently.
-    """
-
     imported = []
 
     xls = pd.ExcelFile(
@@ -1604,13 +1521,6 @@ def merge_planner_requests(
     planner_data,
     imported_requests,
 ):
-    """
-    Add imported request slots without duplicating
-    slots that already exist.
-
-    Existing assigned/cancelled slots are preserved.
-    """
-
     slots = planner_data.setdefault(
         "slots",
         [],
@@ -1619,7 +1529,6 @@ def merge_planner_requests(
     added = 0
     existing = 0
 
-    # Existing slot keys.
     existing_keys = {}
 
     for slot in slots:
@@ -1633,8 +1542,6 @@ def merge_planner_requests(
             [],
         ).append(slot)
 
-    # Avoid adding the exact same request twice
-    # during one import.
     imported_seen = {}
 
     for request in imported_requests:
@@ -1852,7 +1759,6 @@ def create_planner_excel(
             get_column_letter(column)
         ].width = 20
 
-    # Archived loads sheet.
     archive_ws = wb.create_sheet(
         "Archived Loads"
     )
@@ -1951,7 +1857,10 @@ def change_slot_status(
         if slot.get("id") != slot_id:
             continue
 
-        if action == "Cancel collection":
+        if action in (
+            "Cancel load",
+            "Cancel collection",
+        ):
             slot["status"] = "cancelled"
 
             slot["cancelled_at"] = (
@@ -1964,11 +1873,12 @@ def change_slot_status(
 
             return True
 
-        if action == "Re-open collection":
+        if action in (
+            "Re-open",
+            "Re-open collection",
+        ):
             slot["status"] = "pending"
 
-            # Clear the load ref so the slot can
-            # be matched again if appropriate.
             slot["load_ref"] = ""
             slot["archive_filename"] = ""
 
@@ -1984,6 +1894,10 @@ def change_slot_status(
 
     return False
 
+
+# ============================================================
+# LOAD PLANNER
+# ============================================================
 
 def show_planner():
     if st.button(
@@ -2014,11 +1928,11 @@ def show_planner():
         st.session_state.planner_week
     )
 
-    control_col1, control_col2, control_col3 = (
-        st.columns([1, 2, 1])
+    previous_col, week_col, today_col, next_col = st.columns(
+        [1.15, 2.2, 0.8, 1.15]
     )
 
-    with control_col1:
+    with previous_col:
         if st.button(
             "⬅ Previous Week",
             use_container_width=True,
@@ -2027,26 +1941,36 @@ def show_planner():
                 current_monday
                 - timedelta(days=7)
             )
+            st.session_state.planner_selected_slot_id = None
             st.rerun()
 
-    with control_col2:
-        selected_date = st.date_input(
-            "Week commencing",
-            value=current_monday,
-            key="planner_week_picker",
+    with week_col:
+        st.markdown(
+            f"""
+            <div style="
+                text-align:center;
+                font-size:1.15rem;
+                font-weight:700;
+                padding-top:0.35rem;
+            ">
+                {format_week_label(current_monday)}
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        selected_monday = monday_for(
-            selected_date
-        )
-
-        if selected_monday != current_monday:
+    with today_col:
+        if st.button(
+            "Today",
+            use_container_width=True,
+        ):
             st.session_state.planner_week = (
-                selected_monday
+                monday_for(date.today())
             )
+            st.session_state.planner_selected_slot_id = None
             st.rerun()
 
-    with control_col3:
+    with next_col:
         if st.button(
             "Next Week ➡",
             use_container_width=True,
@@ -2055,14 +1979,11 @@ def show_planner():
                 current_monday
                 + timedelta(days=7)
             )
+            st.session_state.planner_selected_slot_id = None
             st.rerun()
 
     current_monday = monday_for(
         st.session_state.planner_week
-    )
-
-    st.subheader(
-        f"Week: {format_week_label(current_monday)}"
     )
 
     # --------------------------------------------------------
@@ -2070,7 +1991,7 @@ def show_planner():
     # --------------------------------------------------------
 
     with st.expander(
-        "📥 Upload / Update Collection Requests",
+        "⚙️ Planner Settings / Import Requests",
         expanded=False,
     ):
         st.write(
@@ -2143,8 +2064,6 @@ def show_planner():
                             )
                         )
 
-                        # Immediately match any CSVs that
-                        # have already been archived.
                         archived_loads = (
                             load_archived_loads()
                         )
@@ -2203,6 +2122,7 @@ def show_planner():
             "🔄 Refresh from GitHub",
             use_container_width=True,
         ):
+            st.session_state.planner_selected_slot_id = None
             st.rerun()
 
     planner_data = load_planner_data()
@@ -2235,7 +2155,7 @@ def show_planner():
             )
 
     # --------------------------------------------------------
-    # CURRENT WEEK SLOTS
+    # CURRENT WEEK
     # --------------------------------------------------------
 
     week_dates = [
@@ -2260,28 +2180,33 @@ def show_planner():
         ) in week_date_keys
     ]
 
-    if not week_slots:
+    # Build all times in the week.
+    times = sorted(
+        {
+            slot.get(
+                "collection_time",
+                "",
+            )
+            for slot in week_slots
+            if slot.get(
+                "collection_time"
+            )
+        },
+        key=time_sort_value,
+    )
+
+    # --------------------------------------------------------
+    # WEEKLY PLANNER GRID
+    # --------------------------------------------------------
+
+    st.subheader("Weekly Planner")
+
+    if not times:
         st.info(
             "No collection requests have been imported "
             "for this week yet."
         )
     else:
-        st.subheader("Weekly Planner")
-
-        times = sorted(
-            {
-                slot.get(
-                    "collection_time",
-                    "",
-                )
-                for slot in week_slots
-                if slot.get(
-                    "collection_time"
-                )
-            },
-            key=time_sort_value,
-        )
-
         # Header.
         header_cols = st.columns(
             [0.7] + [1] * 7
@@ -2308,14 +2233,20 @@ def show_planner():
             header_cols[index].markdown(
                 f"""
                 <div class="planner-day-header">
-                    {current_date.strftime('%a')}<br>
+                    {current_date.strftime('%A')}<br>
                     {current_date.strftime('%d/%m')}
                     <br>
-                    <small>{count} load(s)</small>
+                    <small>{count} collection(s)</small>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
+
+        st.markdown(
+            "**Legend:** 🩶 Pending = 1 &nbsp;&nbsp; "
+            "🟩 Archived = Load Ref &nbsp;&nbsp; "
+            "🟥 Cancelled = C"
+        )
 
         # Each row is a collection time.
         for time_text in times:
@@ -2357,31 +2288,13 @@ def show_planner():
                     )
                     continue
 
-                # Normally there will be one slot per
-                # date/time. If the workbook ever contains
-                # multiple requests at the same time, show
-                # each one separately.
                 for slot_number, slot in enumerate(
                     matching_slots
                 ):
-                    display_value, css_class = (
+                    display_value, _ = (
                         planner_slot_display(
                             slot
                         )
-                    )
-
-                    cell.markdown(
-                        f"""
-                        <div class="planner-cell {css_class}">
-                            <div class="planner-time">
-                                {time_text}
-                            </div>
-                            <div class="planner-value">
-                                {display_value}
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
                     )
 
                     status = slot.get(
@@ -2389,49 +2302,161 @@ def show_planner():
                         "pending",
                     )
 
+                    if status == "assigned":
+                        status_key = "assigned"
+                    elif status == "cancelled":
+                        status_key = "cancelled"
+                    else:
+                        status_key = "pending"
+
+                    if cell.button(
+                        display_value,
+                        key=(
+                            f"planner_cell_"
+                            f"{status_key}_"
+                            f"{slot.get('id')}_"
+                            f"{slot_number}"
+                        ),
+                        use_container_width=True,
+                        help=(
+                            f"{current_date.strftime('%A %d/%m')}"
+                            f" — {time_text}"
+                        ),
+                    ):
+                        st.session_state.planner_selected_slot_id = (
+                            slot.get("id")
+                        )
+                        st.rerun()
+
+        # ----------------------------------------------------
+        # SELECTED COLLECTION CONTROL
+        # ----------------------------------------------------
+
+        selected_slot_id = (
+            st.session_state.get(
+                "planner_selected_slot_id"
+            )
+        )
+
+        selected_slot = next(
+            (
+                slot
+                for slot in planner_data.get(
+                    "slots",
+                    [],
+                )
+                if slot.get("id")
+                == selected_slot_id
+            ),
+            None,
+        )
+
+        if selected_slot:
+            selected_date = normalise_date_only(
+                selected_slot.get(
+                    "collection_date"
+                )
+            )
+
+            date_text = (
+                selected_date.strftime(
+                    "%A %d/%m"
+                )
+                if selected_date
+                else selected_slot.get(
+                    "collection_date",
+                    "",
+                )
+            )
+
+            selected_time = selected_slot.get(
+                "collection_time",
+                "",
+            )
+
+            status = selected_slot.get(
+                "status",
+                "pending",
+            )
+
+            if status == "assigned":
+                status_label = "Archived"
+            elif status == "cancelled":
+                status_label = "Cancelled"
+            else:
+                status_label = "Pending"
+
+            st.markdown(
+                "#### Selected Collection"
+            )
+
+            with st.container(border=True):
+                info_col1, info_col2 = st.columns(
+                    [1, 1]
+                )
+
+                with info_col1:
+                    st.markdown(
+                        f"""
+                        <div class="planner-selected-title">
+                            {date_text} — {selected_time}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    if status == "assigned":
+                        st.markdown(
+                            f"**Load Ref:** "
+                            f"{selected_slot.get('load_ref', '')}"
+                        )
+
+                    st.markdown(
+                        f"**Status:** {status_label}"
+                    )
+
+                with info_col2:
                     if status == "cancelled":
                         options = [
-                            "No change",
-                            "Re-open collection",
+                            "Re-open",
                         ]
                     else:
                         options = [
                             "No change",
-                            "Cancel collection",
+                            "Cancel load",
                         ]
 
-                    action = cell.selectbox(
+                    action = st.selectbox(
                         "Action",
                         options,
                         key=(
-                            f"planner_action_"
-                            f"{slot.get('id')}_"
-                            f"{slot_number}"
+                            "planner_selected_action_"
+                            f"{selected_slot.get('id')}"
                         ),
-                        label_visibility="collapsed",
                     )
 
-                    if action != "No change":
-                        changed = change_slot_status(
-                            planner_data,
-                            slot.get("id"),
-                            action,
+                if action != "No change":
+                    changed = change_slot_status(
+                        planner_data,
+                        selected_slot.get("id"),
+                        action,
+                    )
+
+                    if changed:
+                        success, message = (
+                            save_planner_data(
+                                planner_data
+                            )
                         )
 
-                        if changed:
-                            success, message = (
-                                save_planner_data(
-                                    planner_data
-                                )
+                        if not success:
+                            st.error(
+                                "Could not save planner "
+                                f"change: {message}"
                             )
 
-                            if not success:
-                                st.error(
-                                    "Could not save planner "
-                                    f"change: {message}"
-                                )
-
-                            st.rerun()
+                        st.session_state.planner_selected_slot_id = None
+                        st.rerun()
 
     # --------------------------------------------------------
     # ARCHIVED LOADS
