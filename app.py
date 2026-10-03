@@ -239,7 +239,8 @@ def get_github_settings():
         return None, None, None
 
 
-def get and repository."""
+def get_github_connection():
+    """Validate GitHub token and repository."""
 
     token, username, repo = get_github_settings()
 
@@ -335,9 +336,20 @@ def get_github_file(file_path):
         file_response = requests.get(
             download_url,
             timeout=20,
+        )
+
+        if file_response.status_code != 200:
+            raise RuntimeError(
+                f"Unable to download GitHub file "
+                f"({file_response.status_code})."
+            )
+
+        content = file_response.text
+
+    return content, data
 
 
-def_saved_load_files():
+def list_saved_load_files():
     """List archived CSV files in the saved_loads GitHub folder."""
     try:
         headers, owner, repo = get_github_connection()
@@ -379,7 +391,97 @@ def find_saved_load_file_for_load_ref(load_ref, saved_files=None):
     if not raw_load_ref or raw_load_ref.lower() in ["nan", "none"]:
         return None
 
-    lookup_name = clean_filename {
+    lookup_name = clean_filename(raw_load_ref).lower()
+    if not lookup_name:
+        return None
+
+    file_list = saved_files if saved_files is not None else list_saved_load_files()
+
+    for file_name in file_list:
+        lower_name = file_name.lower()
+        stem = lower_name[:-4] if lower_name.endswith(".csv") else lower_name
+
+        if stem.startswith(f"{lookup_name}_"):
+            return file_name
+
+        if lower_name == f"{lookup_name}.csv":
+            return file_name
+
+    return None
+
+
+def upload_github_file(
+    file_path,
+    file_content,
+    commit_message,
+):
+    """Create or update a file in GitHub."""
+
+    headers, owner, repo = get_github_connection()
+
+    encoded_path = urllib.parse.quote(
+        file_path,
+        safe="/",
+    )
+
+    url = (
+        f"https://api.github.com/repos/"
+        f"{owner}/{repo}/contents/{encoded_path}"
+    )
+
+    existing_response = requests.get(
+        f"{url}?ref={GITHUB_BRANCH}",
+        headers=headers,
+        timeout=20,
+    )
+
+    sha = None
+
+    if existing_response.status_code == 200:
+
+        sha = existing_response.json().get(
+            "sha"
+        )
+
+    elif existing_response.status_code != 404:
+
+        raise RuntimeError(
+            f"GitHub file path check failed "
+            f"({existing_response.status_code}): "
+            f"{existing_response.text}"
+        )
+
+    encoded_content = base64.b64encode(
+        file_content.encode("utf-8")
+    ).decode("ascii")
+
+    payload = {
+        "message": commit_message,
+        "content": encoded_content,
+        "branch": GITHUB_BRANCH,
+    }
+
+    if sha:
+        payload["sha"] = sha
+
+    response = requests.put(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+
+    if response.status_code not in (200, 201):
+
+        raise RuntimeError(
+            f"GitHub upload failed "
+            f"({response.status_code}): "
+            f"{response.text}"
+        )
+
+    result = response.json()
+
+    return {
         "file_url": result.get(
             "content",
             {},
@@ -1307,7 +1409,17 @@ def show_home():
 
         st.markdown(
             '<div class="tool-icon">👥</div>',
-            unsafe_allow_html=True,markdown(
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div class="tool-title">'
+            'Campeys Contact List'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
             '<div class="tool-description">'
             'View the Campeys contact list stored '
             'in the GitHub repository.'
@@ -2291,7 +2403,10 @@ def show_sender():
 
     st.caption(
         "Convert WMS data, archive the CSV and "
-        " = st.text_input(
+        "maintain the SKU load history."
+    )
+
+    load_ref = st.text_input(
         "Load Ref",
         placeholder="Enter load reference",
     )
@@ -2394,7 +2509,15 @@ def show_sender():
 
         current_datetime = datetime.now(
             london
-        ). = (
+        ).strftime(
+            "%d/%m/%Y %H:%M"
+        )
+
+        df["Load Ref"] = (
+            load_ref.strip()
+        )
+
+        df["Date"] = (
             current_datetime
         )
 
@@ -2574,10 +2697,6 @@ def show_sender():
                 key="send_to_grayson",
             )
 
-        # --------------------------------------------------------
-        # BUILD RECIPIENT LIST
-        # --------------------------------------------------------
-
         recipients = []
 
         if send_to_kpsnacks:
@@ -2592,10 +2711,6 @@ def show_sender():
         if not recipients:
             st.warning("Please select at least one recipient.")
         else:
-            # --------------------------------------------------------
-            # SEND EMAIL VIA GMAIL SMTP
-            # --------------------------------------------------------
-
             if st.button(
                 "📧 Send Email with CSV",
                 type="primary",
@@ -2608,7 +2723,12 @@ def show_sender():
                 )
 
                 email_body = (
-                     in sku_counts.items():
+                    "Hi,\n\n"
+                    f"Please find attached the CSV file for load ref {load_ref.strip()}.\n\n"
+                    "SKU Counts:\n\n"
+                )
+
+                for sku, count in sku_counts.items():
                     email_body += f"{sku}: {count}\n"
 
                 email_body += "\n\nThanks"
@@ -2652,5 +2772,15 @@ elif st.session_state.page == "history":
 
     show_history()
 
-elif st.session = "home"
+elif st.session_state.page == "import":
+
+    show_import()
+
+elif st.session_state.page == "contacts":
+
+    show_contacts()
+
+else:
+
+    st.session_state.page = "home"
     st.rerun()
