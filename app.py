@@ -2,14 +2,14 @@ import base64
 import io
 import json
 import re
-import smtplib
 import urllib.parse
 import uuid
-from collections import defaultdict
-from datetime import date, datetime, timedelta, time
+from datetime import datetime, timedelta, date, time
+import smtplib
+
+from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 import pandas as pd
 import pytz
@@ -64,9 +64,6 @@ SKU_HISTORY_PATH = "sku_counts_history.csv"
 CONTACT_LIST_PATH = "campeys contact list.txt"
 PLANNER_PATH = "load_planner_requests.json"
 
-# New lightweight index of archived loads.
-ARCHIVE_INDEX_PATH = "archive_index.json"
-
 EMAIL_TO = "kpsnacks@campeys.co.uk"
 LUKE_EMAIL = "luke.oreilly@kpsnacks.com"
 GRAYSON_EMAIL = "grayson.swan@kpsnacks.com"
@@ -79,14 +76,6 @@ EMAIL_CC = [
 GMAIL_ADDRESS = "kp.ponte.csv@gmail.com"
 
 AUTOSTORE_URL = "https://autostore-live.snacks.local/app"
-
-GITHUB_API_URL = "https://api.github.com"
-
-LONDON_TZ = pytz.timezone("Europe/London")
-
-SUMMARY_PATTERN = (
-    r"^\s*(total|totals|summary|grand total|sub[- ]?total)\s*$"
-)
 
 
 # ============================================================
@@ -218,16 +207,8 @@ st.markdown(
 
 
 # ============================================================
-# GENERAL HELPERS
+# NAVIGATION
 # ============================================================
-
-def london_now():
-    return datetime.now(LONDON_TZ)
-
-
-def london_now_iso():
-    return london_now().isoformat()
-
 
 def go_to(page):
     st.session_state.page = page
@@ -243,91 +224,55 @@ def go_to(page):
 
 
 # ============================================================
-# GITHUB CONNECTION
+# GITHUB
 # ============================================================
 
-@st.cache_resource
-def get_github_session():
-    """
-    Reuse one HTTP session for all GitHub requests.
-    This avoids repeatedly establishing HTTP connections.
-    """
-    session = requests.Session()
-
-    session.headers.update(
-        {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "KP-Campeys-SSCC-Sender",
-        }
-    )
-
-    return session
-
-
 def get_github_settings():
-    token = st.secrets.get(
-        "github_token",
-        "",
-    )
-
-    username = st.secrets.get(
-        "github_username",
-        GITHUB_OWNER,
-    )
-
-    repo = st.secrets.get(
-        "github_repo",
-        GITHUB_REPO,
-    )
+    token = st.secrets.get("github_token", "")
+    username = st.secrets.get("github_username", GITHUB_OWNER)
+    repo = st.secrets.get("github_repo", GITHUB_REPO)
 
     return token, username, repo
 
 
-def get_github_headers():
-    token, _, _ = get_github_settings()
+def get_github_connection():
+    token, username, repo = get_github_settings()
 
     if not token:
-        raise RuntimeError(
-            "GitHub token is not configured in Streamlit Secrets."
-        )
+        st.error("GitHub token is not configured in Streamlit Secrets.")
+        return None
 
+    return {
+        "token": token,
+        "username": username,
+        "repo": repo,
+    }
+
+
+def github_headers(token):
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
     }
 
 
-def get_github_url(file_path=""):
-    _, username, repo = get_github_settings()
-
-    encoded_path = urllib.parse.quote(
-        file_path,
-        safe="/",
-    )
-
-    return (
-        f"{GITHUB_API_URL}/repos/"
-        f"{username}/{repo}/contents/"
-        f"{encoded_path}"
-    )
-
-
-@st.cache_data(
-    ttl=60,
-    show_spinner=False,
-)
 def get_github_file(file_path):
-    """
-    Cached GitHub file download.
+    connection = get_github_connection()
 
-    Most GitHub reads are safe to cache because these files are
-    only changed by this application.
-    """
-    session = get_github_session()
+    if not connection:
+        return None
 
-    response = session.get(
-        get_github_url(file_path),
-        headers=get_github_headers(),
+    token = connection["token"]
+    repo = connection["repo"]
+
+    url = (
+        f"https://api.github.com/repos/"
+        f"{GITHUB_OWNER}/{repo}/contents/{urllib.parse.quote(file_path)}"
+    )
+
+    response = requests.get(
+        url,
+        headers=github_headers(token),
         params={"ref": GITHUB_BRANCH},
         timeout=30,
     )
@@ -342,9 +287,7 @@ def get_github_file(file_path):
     if "content" not in data:
         return None
 
-    content = base64.b64decode(
-        data["content"]
-    ).decode("utf-8-sig")
+    content = base64.b64decode(data["content"]).decode("utf-8-sig")
 
     return {
         "content": content,
@@ -354,78 +297,38 @@ def get_github_file(file_path):
     }
 
 
-@st.cache_data(
-    ttl=60,
-    show_spinner=False,
-)
-def list_saved_load_files():
-    session = get_github_session()
+def upload_github_file(file_path, file_content, commit_message):
+    connection = get_github_connection()
 
-    response = session.get(
-        get_github_url(GITHUB_FOLDER),
-        headers=get_github_headers(),
-        params={"ref": GITHUB_BRANCH},
-        timeout=30,
+    if not connection:
+        return False, "GitHub connection unavailable."
+
+    token = connection["token"]
+    repo = connection["repo"]
+
+    url = (
+        f"https://api.github.com/repos/"
+        f"{GITHUB_OWNER}/{repo}/contents/{urllib.parse.quote(file_path)}"
     )
-
-    if response.status_code == 404:
-        return []
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    if not isinstance(data, list):
-        return []
-
-    return sorted(
-        item["name"]
-        for item in data
-        if (
-            item.get("type") == "file"
-            and item.get("name", "").lower().endswith(".csv")
-        )
-    )
-
-
-def invalidate_github_caches():
-    """
-    Clear caches after a GitHub write.
-    """
-    get_github_file.clear()
-    list_saved_load_files.clear()
-    load_archive_index.clear()
-    load_archived_loads.clear()
-    load_history.clear()
-    load_planner_data.clear()
-
-
-def upload_github_file(
-    file_path,
-    file_content,
-    commit_message,
-):
-    """
-    Upload or update a GitHub file.
-    """
-    session = get_github_session()
 
     existing = get_github_file(file_path)
 
+    encoded = base64.b64encode(
+        file_content.encode("utf-8")
+    ).decode("utf-8")
+
     payload = {
         "message": commit_message,
-        "content": base64.b64encode(
-            file_content.encode("utf-8")
-        ).decode("ascii"),
+        "content": encoded,
         "branch": GITHUB_BRANCH,
     }
 
     if existing and existing.get("sha"):
         payload["sha"] = existing["sha"]
 
-    response = session.put(
-        get_github_url(file_path),
-        headers=get_github_headers(),
+    response = requests.put(
+        url,
+        headers=github_headers(token),
         json=payload,
         timeout=30,
     )
@@ -433,400 +336,85 @@ def upload_github_file(
     if response.status_code not in (200, 201):
         return False, response.text
 
-    invalidate_github_caches()
-
     return True, response.json()
 
 
-# ============================================================
-# ARCHIVE INDEX
-# ============================================================
+def list_saved_load_files():
+    connection = get_github_connection()
 
-def empty_archive_index():
-    return {
-        "version": 1,
-        "updated_at": "",
-        "loads": [],
-    }
+    if not connection:
+        return []
 
+    token = connection["token"]
+    repo = connection["repo"]
 
-@st.cache_data(
-    ttl=120,
-    show_spinner=False,
-)
-def load_archive_index():
-    """
-    Load the lightweight archive index.
-
-    This avoids downloading every archived CSV merely to find
-    out which loads exist.
-    """
-    result = get_github_file(
-        ARCHIVE_INDEX_PATH
+    url = (
+        f"https://api.github.com/repos/"
+        f"{GITHUB_OWNER}/{repo}/contents/{GITHUB_FOLDER}"
     )
 
-    if not result:
-        return empty_archive_index()
-
-    try:
-        data = json.loads(
-            result["content"]
-        )
-
-        if not isinstance(data, dict):
-            return empty_archive_index()
-
-        if "loads" not in data:
-            data["loads"] = []
-
-        return data
-
-    except Exception:
-        return empty_archive_index()
-
-
-def save_archive_index(index_data):
-    data = dict(index_data)
-
-    data["updated_at"] = london_now_iso()
-
-    content = json.dumps(
-        data,
-        indent=2,
-        ensure_ascii=False,
+    response = requests.get(
+        url,
+        headers=github_headers(token),
+        params={"ref": GITHUB_BRANCH},
+        timeout=30,
     )
 
-    return upload_github_file(
-        ARCHIVE_INDEX_PATH,
-        content,
-        "Update archived load index",
-    )
+    if response.status_code == 404:
+        return []
 
+    if response.status_code != 200:
+        return []
 
-def add_archive_to_index(
-    filename,
-    load_ref,
-    archived_date,
-):
-    """
-    Add a newly archived load to the lightweight index.
-    """
-    index_data = load_archive_index()
+    data = response.json()
 
-    loads = index_data.setdefault(
-        "loads",
-        [],
-    )
-
-    load_ref = str(load_ref).strip()
-
-    # Avoid duplicate index entries.
-    existing = next(
-        (
-            item
-            for item in loads
-            if (
-                str(item.get("load_ref", "")).strip()
-                == load_ref
-                and item.get("filename") == filename
-            )
-        ),
-        None,
-    )
-
-    if existing:
-        return True, "Archive index already contains this load."
-
-    loads.append(
-        {
-            "load_ref": load_ref,
-            "date": archived_date,
-            "filename": filename,
-            "path": f"{GITHUB_FOLDER}/{filename}",
-        }
-    )
-
-    loads.sort(
-        key=lambda item: (
-            item.get("date", ""),
-            item.get("filename", ""),
-        )
-    )
-
-    return save_archive_index(index_data)
-
-
-def rebuild_archive_index():
-    """
-    Rebuild the archive index from the existing CSV archive.
-
-    This is useful if the index does not exist yet or if historic
-    CSVs were added manually.
-    """
-    files = list_saved_load_files()
-
-    loads = []
-
-    for filename in files:
-        result = get_github_file(
-            f"{GITHUB_FOLDER}/{filename}"
-        )
-
-        if not result:
-            continue
-
-        try:
-            df = pd.read_csv(
-                io.StringIO(result["content"]),
-                dtype=str,
-                usecols=lambda column: column in {
-                    "Load Ref",
-                    "Date",
-                    "Date Submitted",
-                    "date",
-                },
-            )
-
-            if df.empty:
-                continue
-
-            load_ref = ""
-
-            if "Load Ref" in df.columns:
-                values = (
-                    df["Load Ref"]
-                    .dropna()
-                    .astype(str)
-                    .str.strip()
-                )
-
-                if not values.empty:
-                    load_ref = values.iloc[0]
-
-            if not load_ref:
-                continue
-
-            date_value = None
-
-            for column in (
-                "Date",
-                "Date Submitted",
-                "date",
-            ):
-                if column not in df.columns:
-                    continue
-
-                parsed = pd.to_datetime(
-                    df[column],
-                    errors="coerce",
-                    dayfirst=True,
-                )
-
-                valid = parsed.dropna()
-
-                if not valid.empty:
-                    date_value = valid.iloc[0]
-                    break
-
-            if date_value is None:
-                continue
-
-            loads.append(
-                {
-                    "load_ref": load_ref,
-                    "date": date_value.date().isoformat(),
-                    "filename": filename,
-                    "path": f"{GITHUB_FOLDER}/{filename}",
-                }
-            )
-
-        except Exception:
-            continue
-
-    loads.sort(
-        key=lambda item: (
-            item["date"],
-            item["filename"],
-        )
-    )
-
-    return save_archive_index(
-        {
-            "version": 1,
-            "updated_at": london_now_iso(),
-            "loads": loads,
-        }
-    )
-
-
-# ============================================================
-# ARCHIVED LOADS
-# ============================================================
-
-@st.cache_data(
-    ttl=120,
-    show_spinner=False,
-)
-def load_archived_loads():
-    """
-    Load archived load metadata from archive_index.json.
-
-    IMPORTANT:
-    This no longer downloads every archived CSV.
-
-    That is the biggest performance improvement in the planner.
-    """
-    index_data = load_archive_index()
-
-    archived = []
-
-    for item in index_data.get(
-        "loads",
-        [],
-    ):
-        load_ref = str(
-            item.get(
-                "load_ref",
-                "",
-            )
-        ).strip()
-
-        filename = str(
-            item.get(
-                "filename",
-                "",
-            )
-        ).strip()
-
-        date_value = str(
-            item.get(
-                "date",
-                "",
-            )
-        ).strip()
-
-        if not load_ref or not filename:
-            continue
-
-        try:
-            parsed_date = pd.to_datetime(
-                date_value,
-                errors="coerce",
-            )
-
-            if pd.isna(parsed_date):
-                continue
-
-            parsed_datetime = parsed_date.to_pydatetime()
-
-        except Exception:
-            continue
-
-        archived.append(
-            {
-                "load_ref": load_ref,
-                "date": parsed_date.date().isoformat(),
-                "datetime": parsed_datetime,
-                "filename": filename,
-                "path": item.get(
-                    "path",
-                    f"{GITHUB_FOLDER}/{filename}",
-                ),
-            }
-        )
+    if not isinstance(data, list):
+        return []
 
     return sorted(
-        archived,
-        key=lambda item: (
-            item["date"],
-            item["datetime"],
-            item["filename"],
-        ),
+        [
+            item["name"]
+            for item in data
+            if item.get("type") == "file"
+            and item.get("name", "").lower().endswith(".csv")
+        ]
     )
 
 
-def find_saved_load_file_for_load_ref(
-    load_ref,
-    saved_files=None,
-):
+def find_saved_load_file_for_load_ref(load_ref, saved_files=None):
     if not load_ref:
         return None
 
     if saved_files is None:
         saved_files = list_saved_load_files()
 
-    clean_ref = str(
-        load_ref
-    ).strip().lower()
+    clean_ref = str(load_ref).strip().lower()
 
     for filename in saved_files:
-        stem = filename.rsplit(
-            ".",
-            1,
-        )[0].lower()
+        stem = filename.rsplit(".", 1)[0].lower()
 
-        if (
-            stem == clean_ref
-            or stem.startswith(
-                clean_ref + "_"
-            )
-        ):
+        if stem == clean_ref or stem.startswith(clean_ref + "_"):
             return filename
 
     return None
 
 
-def upload_to_github(
-    csv_text,
-    filename,
-    load_ref=None,
-    archived_date=None,
-):
-    file_path = (
-        f"{GITHUB_FOLDER}/{filename}"
-    )
+def upload_to_github(csv_text, filename):
+    file_path = f"{GITHUB_FOLDER}/{filename}"
 
-    success, result = upload_github_file(
+    return upload_github_file(
         file_path,
         csv_text,
         f"Archive sender load {filename}",
     )
-
-    if not success:
-        return False, result
-
-    # Update the lightweight archive index.
-    if load_ref and archived_date:
-        index_ok, index_result = (
-            add_archive_to_index(
-                filename,
-                load_ref,
-                archived_date,
-            )
-        )
-
-        if not index_ok:
-            return False, (
-                "CSV archived successfully, but the "
-                f"archive index could not be updated: "
-                f"{index_result}"
-            )
-
-    return True, result
 
 
 # ============================================================
 # HISTORY
 # ============================================================
 
-@st.cache_data(
-    ttl=120,
-    show_spinner=False,
-)
 def load_history():
-    result = get_github_file(
-        SKU_HISTORY_PATH
-    )
+    result = get_github_file(SKU_HISTORY_PATH)
 
     if not result:
         return pd.DataFrame(
@@ -843,22 +431,12 @@ def load_history():
             io.StringIO(result["content"]),
             dtype=str,
         )
-
     except Exception:
-        return pd.DataFrame(
-            columns=[
-                "Date",
-                "Load Ref",
-                "Item Code",
-                "Quantity",
-            ]
-        )
+        return pd.DataFrame()
 
 
 def save_history(history_df):
-    csv_text = history_df.to_csv(
-        index=False
-    )
+    csv_text = history_df.to_csv(index=False)
 
     return upload_github_file(
         SKU_HISTORY_PATH,
@@ -867,44 +445,35 @@ def save_history(history_df):
     )
 
 
-def update_sku_history(
-    load_ref,
-    sku_counts,
-):
+def update_sku_history(load_ref, sku_counts):
     history = load_history()
 
-    if not sku_counts:
-        return True, "No SKU history changes were required."
+    new_rows = []
 
-    timestamp = london_now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    for item_code, quantity in sku_counts.items():
+        new_rows.append(
+            {
+                "Date": datetime.now(
+                    pytz.timezone("Europe/London")
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "Load Ref": load_ref,
+                "Item Code": item_code,
+                "Quantity": int(quantity),
+            }
+        )
 
-    new_rows = pd.DataFrame(
-        {
-            "Date": timestamp,
-            "Load Ref": load_ref,
-            "Item Code": list(
-                sku_counts.keys()
-            ),
-            "Quantity": [
-                int(value)
-                for value in sku_counts.values()
+    if new_rows:
+        history = pd.concat(
+            [
+                history,
+                pd.DataFrame(new_rows),
             ],
-        }
-    )
+            ignore_index=True,
+        )
 
-    history = pd.concat(
-        [
-            history,
-            new_rows,
-        ],
-        ignore_index=True,
-    )
+    success, message = save_history(history)
 
-    return save_history(
-        history
-    )
+    return success, message
 
 
 # ============================================================
@@ -914,25 +483,17 @@ def update_sku_history(
 def clean_column_names(df):
     df = df.copy()
 
-    df.columns = (
-        pd.Index(df.columns)
-        .map(str)
-        .str.strip()
-    )
+    df.columns = [
+        str(column).strip()
+        for column in df.columns
+    ]
 
     return df
 
 
-def find_column(
-    df,
-    possible_names,
-):
+def find_column(df, possible_names):
     normalised = {
-        re.sub(
-            r"\s+",
-            " ",
-            str(column).strip().lower(),
-        ): column
+        re.sub(r"\s+", " ", str(column).strip().lower()): column
         for column in df.columns
     }
 
@@ -961,7 +522,7 @@ def read_wms_file(uploaded_file):
         )
 
         if len(df.columns) <= 1:
-            raise ValueError
+            raise ValueError()
 
     except Exception:
         df = pd.read_csv(
@@ -971,6 +532,30 @@ def read_wms_file(uploaded_file):
         )
 
     return clean_column_names(df)
+
+
+def make_clean_load_ref(value):
+    if value is None or pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+
+    if text.endswith(".0"):
+        text = text[:-2]
+
+    return text
+
+
+def make_clean_sscc(value):
+    if value is None or pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+
+    if text.endswith(".0"):
+        text = text[:-2]
+
+    return text
 
 
 def process_wms_dataframe(df):
@@ -990,70 +575,41 @@ def process_wms_dataframe(df):
 
     df = df.copy()
 
-    # Vectorised cleaning.
     for column in EXPECTED_COLUMNS:
-        df[column] = (
-            df[column]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
+        df[column] = df[column].fillna("").astype(str).str.strip()
 
-    for column in (
-        "Load Ref",
-        "SSCC",
-    ):
-        df[column] = (
-            df[column]
-            .str.replace(
-                r"\.0$",
-                "",
-                regex=True,
-            )
-        )
+    df["Load Ref"] = df["Load Ref"].apply(make_clean_load_ref)
+    df["SSCC"] = df["SSCC"].apply(make_clean_sscc)
 
-    # Remove empty rows.
-    df = df.loc[
-        df["SSCC"].ne("")
-        & df["Item Code"].ne("")
+    df = df[
+        (df["SSCC"] != "")
+        & (df["Item Code"] != "")
     ].copy()
 
-    # Remove summary rows using one combined mask.
-    summary_mask = pd.Series(
-        False,
-        index=df.index,
+    summary_pattern = (
+        r"^\s*(total|totals|summary|grand total|"
+        r"sub[- ]?total)\s*$"
     )
 
-    for column in (
-        "SSCC",
-        "Item Code",
-        "Item Description",
-    ):
+    for column in ["SSCC", "Item Code", "Item Description"]:
         if column in df.columns:
-            summary_mask |= df[column].str.contains(
-                SUMMARY_PATTERN,
+            mask = ~df[column].str.contains(
+                summary_pattern,
                 case=False,
                 regex=True,
                 na=False,
             )
-
-    df = df.loc[
-        ~summary_mask
-    ].copy()
+            df = df[mask].copy()
 
     if df.empty:
         raise ValueError(
             "No valid SSCC / Item Code rows were found."
         )
 
-    load_refs = (
-        df.loc[
-            df["Load Ref"].ne(""),
-            "Load Ref",
-        ]
-        .drop_duplicates()
-        .tolist()
-    )
+    load_refs = [
+        ref for ref in df["Load Ref"].tolist()
+        if ref
+    ]
 
     if not load_refs:
         raise ValueError(
@@ -1062,10 +618,10 @@ def process_wms_dataframe(df):
 
     load_ref = load_refs[0]
 
-    now_london = london_now()
+    london = pytz.timezone("Europe/London")
+    now_london = datetime.now(london)
 
     df["Load Ref"] = load_ref
-
     df["Date"] = now_london.strftime(
         "%d/%m/%Y %H:%M"
     )
@@ -1082,18 +638,23 @@ def process_wms_dataframe(df):
     )
 
     if movement_col:
-        df["Movement/JDE Order Ref"] = (
-            df[movement_col]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
+        df["Movement/JDE Order Ref"] = df[
+            movement_col
+        ]
     else:
         df["Movement/JDE Order Ref"] = ""
 
     df = df[
-        FINAL_COLUMNS
-    ].copy()
+        [
+            "Load Ref",
+            "Date",
+            "SSCC",
+            "Item Code",
+            "Item Description",
+            "Quantity",
+            "Movement/JDE Order Ref",
+        ]
+    ]
 
     return df, load_ref
 
@@ -1110,33 +671,21 @@ def send_email_with_attachment(
     )
 
     if not password:
-        return (
-            False,
-            "Gmail password is not configured.",
-        )
+        return False, "Gmail password is not configured."
 
-    recipients = list(
-        EMAIL_CC
-    )
+    recipients = list(EMAIL_CC)
 
     if own_email:
         own_email = own_email.strip()
 
-        if (
-            own_email
-            and own_email not in recipients
-        ):
-            recipients.append(
-                own_email
-            )
+        if own_email and own_email not in recipients:
+            recipients.append(own_email)
 
     message = MIMEMultipart()
 
     message["From"] = GMAIL_ADDRESS
     message["To"] = EMAIL_TO
-    message["Cc"] = ", ".join(
-        recipients
-    )
+    message["Cc"] = ", ".join(recipients)
     message["Subject"] = (
         f"Campeys SSCC Load {load_ref}"
     )
@@ -1153,12 +702,7 @@ Regards,
 KP Pontefract
 """
 
-    message.attach(
-        MIMEText(
-            body,
-            "plain",
-        )
-    )
+    message.attach(MIMEText(body, "plain"))
 
     attachment = MIMEApplication(
         csv_bytes,
@@ -1171,9 +715,7 @@ KP Pontefract
         filename=filename,
     )
 
-    message.attach(
-        attachment
-    )
+    message.attach(attachment)
 
     try:
         with smtplib.SMTP_SSL(
@@ -1192,16 +734,10 @@ KP Pontefract
                 message.as_string(),
             )
 
-        return (
-            True,
-            "Email sent successfully.",
-        )
+        return True, "Email sent successfully."
 
     except Exception as exc:
-        return (
-            False,
-            str(exc),
-        )
+        return False, str(exc)
 
 
 # ============================================================
@@ -1216,9 +752,7 @@ def show_sender():
         go_to("home")
         st.rerun()
 
-    st.title(
-        "📦 KP to Campeys SSCC Sender"
-    )
+    st.title("📦 KP to Campeys SSCC Sender")
 
     st.write(
         "Upload the WMS export, clean it, archive it to GitHub "
@@ -1227,10 +761,7 @@ def show_sender():
 
     uploaded_file = st.file_uploader(
         "Upload WMS file",
-        type=[
-            "csv",
-            "txt",
-        ],
+        type=["csv", "txt"],
         key="wms_upload",
     )
 
@@ -1243,64 +774,33 @@ def show_sender():
         use_container_width=True,
     ):
         try:
-            with st.spinner(
-                "Processing WMS file..."
-            ):
-                df = read_wms_file(
-                    uploaded_file
-                )
+            with st.spinner("Processing WMS file..."):
+                df = read_wms_file(uploaded_file)
 
-                output_df, load_ref = (
-                    process_wms_dataframe(df)
-                )
-
-                # Vectorised SKU aggregation.
-                quantity_numeric = pd.to_numeric(
-                    output_df["Quantity"]
-                    .astype(str)
-                    .str.replace(
-                        ",",
-                        "",
-                        regex=False,
-                    ),
-                    errors="coerce",
-                )
+                output_df, load_ref = process_wms_dataframe(df)
 
                 sku_counts = (
-                    output_df.assign(
-                        _quantity=quantity_numeric
-                    )
-                    .dropna(
-                        subset=[
-                            "_quantity"
-                        ]
-                    )
-                    .groupby(
-                        "Item Code"
-                    )["_quantity"]
+                    output_df
+                    .groupby("Item Code")["Quantity"]
                     .sum()
-                    .astype(int)
                     .to_dict()
                 )
 
+                london = pytz.timezone("Europe/London")
+
                 filename = (
                     f"{load_ref}_"
-                    f"{london_now().strftime('%Y%m%d_%H%M%S')}.csv"
+                    f"{datetime.now(london).strftime('%Y%m%d_%H%M%S')}.csv"
                 )
 
                 csv_text = output_df.to_csv(
                     index=False,
+                    encoding="utf-8-sig",
                 )
 
-                archive_date = london_now().date().isoformat()
-
-                github_ok, github_result = (
-                    upload_to_github(
-                        csv_text,
-                        filename,
-                        load_ref=load_ref,
-                        archived_date=archive_date,
-                    )
+                github_ok, github_result = upload_to_github(
+                    csv_text,
+                    filename,
                 )
 
                 if github_ok:
@@ -1343,7 +843,7 @@ def show_sender():
                     )
                 else:
                     st.warning(
-                        "SKU history was not updated: "
+                        f"SKU history was not updated: "
                         f"{history_result}"
                     )
 
@@ -1373,9 +873,7 @@ def show_sender():
         hide_index=True,
     )
 
-    st.subheader(
-        "SKU Counts"
-    )
+    st.subheader("SKU Counts")
 
     sku_df = pd.DataFrame(
         [
@@ -1384,8 +882,7 @@ def show_sender():
                 "Quantity": quantity,
             }
             for item, quantity in (
-                st.session_state.sku_counts
-                or {}
+                st.session_state.sku_counts or {}
             ).items()
         ]
     )
@@ -1398,17 +895,13 @@ def show_sender():
 
     st.download_button(
         "⬇️ Download CSV",
-        data=csv_text.encode(
-            "utf-8-sig"
-        ),
+        data=csv_text.encode("utf-8-sig"),
         file_name=filename,
         mime="text/csv",
         use_container_width=True,
     )
 
-    st.subheader(
-        "Send to Campeys"
-    )
+    st.subheader("Send to Campeys")
 
     own_email = st.text_input(
         "Optional additional email address",
@@ -1420,24 +913,16 @@ def show_sender():
         type="primary",
         use_container_width=True,
     ):
-        with st.spinner(
-            "Sending email..."
-        ):
-            success, message = (
-                send_email_with_attachment(
-                    csv_text.encode(
-                        "utf-8-sig"
-                    ),
-                    filename,
-                    load_ref,
-                    own_email,
-                )
+        with st.spinner("Sending email..."):
+            success, message = send_email_with_attachment(
+                csv_text.encode("utf-8-sig"),
+                filename,
+                load_ref,
+                own_email,
             )
 
         if success:
-            st.success(
-                message
-            )
+            st.success(message)
         else:
             st.error(
                 f"Email failed: {message}"
@@ -1445,23 +930,17 @@ def show_sender():
 
 
 # ============================================================
-# PLANNER DATE / TIME HELPERS
+# PLANNER DATE/TIME HELPERS
 # ============================================================
 
 def normalise_date_only(value):
     if value is None:
         return None
 
-    if isinstance(
-        value,
-        datetime,
-    ):
+    if isinstance(value, datetime):
         return value.date()
 
-    if isinstance(
-        value,
-        date,
-    ):
+    if isinstance(value, date):
         return value
 
     parsed = pd.to_datetime(
@@ -1486,32 +965,13 @@ def parse_time_value(value):
     except Exception:
         pass
 
-    if isinstance(
-        value,
-        time,
-    ):
-        return value.strftime(
-            "%H:%M"
-        )
+    if isinstance(value, time):
+        return value.strftime("%H:%M")
 
-    if isinstance(
-        value,
-        (
-            datetime,
-            pd.Timestamp,
-        ),
-    ):
-        return value.strftime(
-            "%H:%M"
-        )
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return value.strftime("%H:%M")
 
-    if isinstance(
-        value,
-        (
-            int,
-            float,
-        ),
-    ):
+    if isinstance(value, (int, float)):
         number = float(value)
 
         if 0 <= number < 1:
@@ -1543,12 +1003,8 @@ def parse_time_value(value):
     )
 
     if match:
-        hours = int(
-            match.group(1)
-        )
-        minutes = int(
-            match.group(2)
-        )
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
 
         if (
             0 <= hours <= 23
@@ -1565,9 +1021,7 @@ def parse_time_value(value):
     )
 
     if pd.notna(parsed):
-        return parsed.strftime(
-            "%H:%M"
-        )
+        return parsed.strftime("%H:%M")
 
     match = re.search(
         r"\b(\d{1,2}):(\d{2})\s*([APap][Mm])?\b",
@@ -1575,13 +1029,8 @@ def parse_time_value(value):
     )
 
     if match:
-        hours = int(
-            match.group(1)
-        )
-        minutes = int(
-            match.group(2)
-        )
-
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
         meridian = match.group(3)
 
         if meridian:
@@ -1607,36 +1056,25 @@ def parse_time_value(value):
 
 def time_sort_value(time_text):
     try:
-        hours, minutes = str(
-            time_text
-        ).split(":")
-
-        return (
-            int(hours) * 60
-            + int(minutes)
+        hours, minutes = (
+            str(time_text).split(":")
         )
+
+        return int(hours) * 60 + int(minutes)
 
     except Exception:
         return 9999
 
 
 def monday_for(value):
-    if isinstance(
-        value,
-        datetime,
-    ):
+    if isinstance(value, datetime):
         value = value.date()
 
-    if not isinstance(
-        value,
-        date,
-    ):
-        value = normalise_date_only(
-            value
-        )
+    if not isinstance(value, date):
+        value = normalise_date_only(value)
 
     if value is None:
-        value = london_now().date()
+        value = date.today()
 
     return value - timedelta(
         days=value.weekday()
@@ -1644,10 +1082,7 @@ def monday_for(value):
 
 
 def format_week_label(monday):
-    sunday = (
-        monday
-        + timedelta(days=6)
-    )
+    sunday = monday + timedelta(days=6)
 
     return (
         f"{monday.strftime('%d/%m/%Y')}"
@@ -1668,10 +1103,6 @@ def empty_planner_data():
     }
 
 
-@st.cache_data(
-    ttl=60,
-    show_spinner=False,
-)
 def load_planner_data():
     result = get_github_file(
         PLANNER_PATH
@@ -1685,16 +1116,11 @@ def load_planner_data():
             result["content"]
         )
 
-        if not isinstance(
-            data,
-            dict,
-        ):
+        if not isinstance(data, dict):
             return empty_planner_data()
 
-        data.setdefault(
-            "slots",
-            [],
-        )
+        if "slots" not in data:
+            data["slots"] = []
 
         return data
 
@@ -1702,16 +1128,18 @@ def load_planner_data():
         return empty_planner_data()
 
 
-def save_planner_data(
-    planner_data,
-):
+def save_planner_data(planner_data):
     planner_data = dict(
         planner_data
     )
 
-    planner_data[
-        "updated_at"
-    ] = london_now_iso()
+    london = pytz.timezone(
+        "Europe/London"
+    )
+
+    planner_data["updated_at"] = (
+        datetime.now(london).isoformat()
+    )
 
     content = json.dumps(
         planner_data,
@@ -1727,59 +1155,100 @@ def save_planner_data(
 
 
 # ============================================================
-# PLANNER INDEXING
+# ARCHIVED LOADS
 # ============================================================
 
-def index_slots_by_date(
-    slots,
-):
-    grouped = defaultdict(list)
+def load_archived_loads():
+    files = list_saved_load_files()
 
-    for slot in slots:
-        grouped[
-            slot.get(
-                "collection_date"
-            )
-        ].append(slot)
+    archived = []
 
-    return grouped
-
-
-def index_slots_by_datetime(
-    slots,
-):
-    grouped = defaultdict(list)
-
-    for slot in slots:
-        key = (
-            slot.get(
-                "collection_date"
-            ),
-            slot.get(
-                "collection_time"
-            ),
+    for filename in files:
+        path = (
+            f"{GITHUB_FOLDER}/"
+            f"{filename}"
         )
 
-        grouped[key].append(
-            slot
-        )
+        result = get_github_file(path)
 
-    return grouped
+        if not result:
+            continue
 
-
-def index_slots_by_load_ref(
-    slots,
-):
-    return {
-        str(
-            slot.get(
-                "load_ref",
-                "",
+        try:
+            df = pd.read_csv(
+                io.StringIO(
+                    result["content"]
+                ),
+                dtype=str,
             )
-        ).strip(): slot
-        for slot in slots
-        if slot.get("load_ref")
-    }
+
+            if df.empty:
+                continue
+
+            load_ref = None
+
+            if "Load Ref" in df.columns:
+                for value in df["Load Ref"]:
+                    if (
+                        value is not None
+                        and not pd.isna(value)
+                        and str(value).strip()
+                    ):
+                        load_ref = str(
+                            value
+                        ).strip()
+                        break
+
+            if not load_ref:
+                continue
+
+            date_value = None
+
+            for column in [
+                "Date",
+                "Date Submitted",
+                "date",
+            ]:
+                if column in df.columns:
+                    for value in df[column]:
+                        parsed = pd.to_datetime(
+                            value,
+                            errors="coerce",
+                            dayfirst=True,
+                        )
+
+                        if pd.notna(parsed):
+                            date_value = parsed
+                            break
+
+                if date_value is not None:
+                    break
+
+            if date_value is None:
+                continue
+
+            archived.append(
+                {
+                    "load_ref": load_ref,
+                    "date": date_value.date().isoformat(),
+                    "datetime": date_value,
+                    "filename": filename,
+                    "path": path,
+                }
+            )
+
+        except Exception:
+            continue
+
+    archived.sort(
+        key=lambda item: (
+            item["date"],
+            item["datetime"],
+            item["filename"],
+        )
+    )
+
+    return archived
 
 
 # ============================================================
@@ -1790,7 +1259,7 @@ def sync_planner_with_archived_loads(
     planner_data,
     archived_loads,
 ):
-    slots = planner_data.setdefault(
+    slots = planner_data.get(
         "slots",
         [],
     )
@@ -1798,43 +1267,31 @@ def sync_planner_with_archived_loads(
     changed = False
 
     used_load_refs = {
-        str(
-            slot.get(
-                "load_ref"
-            )
-        ).strip()
+        str(slot.get("load_ref")).strip()
         for slot in slots
-        if (
-            slot.get("load_ref")
-            and slot.get("status")
-            in (
-                "assigned",
-                "cancelled",
-            )
+        if slot.get("load_ref")
+        and slot.get("status") in (
+            "assigned",
+            "cancelled",
         )
     }
 
-    archived_by_date = defaultdict(
-        list
-    )
+    archived_by_date = {}
 
     for load in archived_loads:
-        archived_by_date[
-            load["date"]
-        ].append(load)
-
-    slots_by_date = index_slots_by_date(
-        slots
-    )
+        archived_by_date.setdefault(
+            load["date"],
+            [],
+        ).append(load)
 
     for date_key, loads in archived_by_date.items():
-        day_slots = slots_by_date.get(
-            date_key,
-            [],
-        )
+        day_slots = [
+            slot
+            for slot in slots
+            if slot.get("collection_date") == date_key
+        ]
 
-        day_slots = sorted(
-            day_slots,
+        day_slots.sort(
             key=lambda slot: (
                 time_sort_value(
                     slot.get(
@@ -1842,11 +1299,8 @@ def sync_planner_with_archived_loads(
                         "23:59",
                     )
                 ),
-                slot.get(
-                    "id",
-                    "",
-                ),
-            ),
+                slot.get("id", ""),
+            )
         )
 
         loads = sorted(
@@ -1858,9 +1312,7 @@ def sync_planner_with_archived_loads(
         )
 
         for load in loads:
-            load_ref = load[
-                "load_ref"
-            ]
+            load_ref = load["load_ref"]
 
             if load_ref in used_load_refs:
                 continue
@@ -1869,13 +1321,8 @@ def sync_planner_with_archived_loads(
                 (
                     slot
                     for slot in day_slots
-                    if (
-                        slot.get("status")
-                        == "pending"
-                        and not slot.get(
-                            "load_ref"
-                        )
-                    )
+                    if slot.get("status") == "pending"
+                    and not slot.get("load_ref")
                 ),
                 None,
             )
@@ -1883,26 +1330,20 @@ def sync_planner_with_archived_loads(
             if pending_slot is None:
                 break
 
-            pending_slot[
-                "status"
-            ] = "assigned"
-
-            pending_slot[
-                "load_ref"
-            ] = load_ref
-
-            pending_slot[
-                "archive_filename"
-            ] = load["filename"]
-
-            pending_slot[
-                "assigned_at"
-            ] = london_now_iso()
-
-            used_load_refs.add(
-                load_ref
+            pending_slot["status"] = "assigned"
+            pending_slot["load_ref"] = load_ref
+            pending_slot["archive_filename"] = (
+                load["filename"]
+            )
+            pending_slot["assigned_at"] = (
+                datetime.now(
+                    pytz.timezone(
+                        "Europe/London"
+                    )
+                ).isoformat()
             )
 
+            used_load_refs.add(load_ref)
             changed = True
 
     return changed
@@ -1913,13 +1354,8 @@ def sync_planner_with_archived_loads(
 # ============================================================
 
 def find_header_row(raw_df):
-    max_rows = min(
-        len(raw_df),
-        20,
-    )
-
     for row_index in range(
-        max_rows
+        min(len(raw_df), 20)
     ):
         values = [
             str(value).strip().lower()
@@ -1930,8 +1366,9 @@ def find_header_row(raw_df):
             ].tolist()
         ]
 
-        has_date = (
-            "date" in values
+        has_date = any(
+            value == "date"
+            for value in values
         )
 
         has_planned_time = any(
@@ -1942,10 +1379,7 @@ def find_header_row(raw_df):
             for value in values
         )
 
-        if (
-            has_date
-            and has_planned_time
-        ):
+        if has_date and has_planned_time:
             return row_index
 
     return None
@@ -2004,44 +1438,18 @@ def parse_campeys_request_sheet(
         ],
     )
 
-    if (
-        not date_col
-        or not planned_time_col
-    ):
+    if not date_col or not planned_time_col:
         return []
 
     imported = []
 
-    # itertuples/records is slightly cheaper than iterrows.
-    records = data[
-        [
-            date_col,
-            planned_time_col,
-        ]
-        + (
-            [site_col]
-            if site_col
-            else []
-        )
-    ].to_dict(
-        "records"
-    )
-
-    for row in records:
-        collection_date = (
-            normalise_date_only(
-                row.get(
-                    date_col
-                )
-            )
+    for _, row in data.iterrows():
+        collection_date = normalise_date_only(
+            row.get(date_col)
         )
 
-        collection_time = (
-            parse_time_value(
-                row.get(
-                    planned_time_col
-                )
-            )
+        collection_time = parse_time_value(
+            row.get(planned_time_col)
         )
 
         if (
@@ -2052,16 +1460,10 @@ def parse_campeys_request_sheet(
 
         if site_col:
             site = str(
-                row.get(
-                    site_col,
-                    "",
-                )
+                row.get(site_col, "")
             ).strip().lower()
 
-            if (
-                site
-                and site != "campey"
-            ):
+            if site and site != "campey":
                 continue
 
         imported.append(
@@ -2071,7 +1473,7 @@ def parse_campeys_request_sheet(
                 ),
                 "collection_time": collection_time,
                 "source": (
-                    "Campey Transport Requests - "
+                    f"Campey Transport Requests - "
                     f"{str(sheet_name).strip()}"
                 ),
             }
@@ -2101,11 +1503,15 @@ def parse_collection_requests_workbook(
         except Exception:
             continue
 
-        imported.extend(
+        sheet_records = (
             parse_campeys_request_sheet(
                 raw,
                 sheet_name,
             )
+        )
+
+        imported.extend(
+            sheet_records
         )
 
     return imported
@@ -2123,29 +1529,20 @@ def merge_planner_requests(
     added = 0
     existing = 0
 
-    existing_keys = defaultdict(
-        list
-    )
+    existing_keys = {}
 
     for slot in slots:
         key = (
-            slot.get(
-                "collection_date"
-            ),
-            slot.get(
-                "collection_time"
-            ),
+            slot.get("collection_date"),
+            slot.get("collection_time"),
         )
 
-        existing_keys[key].append(
-            slot
-        )
+        existing_keys.setdefault(
+            key,
+            [],
+        ).append(slot)
 
-    imported_seen = defaultdict(
-        int
-    )
-
-    timestamp = london_now_iso()
+    imported_seen = {}
 
     for request in imported_requests:
         date_key = request[
@@ -2161,14 +1558,17 @@ def merge_planner_requests(
             time_key,
         )
 
-        imported_seen[key] += 1
+        imported_seen[key] = (
+            imported_seen.get(key, 0)
+            + 1
+        )
 
         requested_number = (
             imported_seen[key]
         )
 
         existing_for_key = (
-            existing_keys[key]
+            existing_keys.get(key, [])
         )
 
         if requested_number <= len(
@@ -2191,16 +1591,16 @@ def merge_planner_requests(
                 "source",
                 "collection_request",
             ),
-            "created_at": timestamp,
+            "created_at": datetime.now(
+                pytz.timezone(
+                    "Europe/London"
+                )
+            ).isoformat(),
         }
 
-        slots.append(
-            slot
-        )
-
-        existing_for_key.append(
-            slot
-        )
+        slots.append(slot)
+        existing_for_key.append(slot)
+        existing_keys[key] = existing_for_key
 
         added += 1
 
@@ -2297,9 +1697,11 @@ def create_planner_excel(
         else:
             display = "1"
 
-        collection_date = slot.get(
-            "collection_date",
-            "",
+        collection_date = (
+            slot.get(
+                "collection_date",
+                "",
+            )
         )
 
         try:
@@ -2461,9 +1863,13 @@ def change_slot_status(
         ):
             slot["status"] = "cancelled"
 
-            slot[
-                "cancelled_at"
-            ] = london_now_iso()
+            slot["cancelled_at"] = (
+                datetime.now(
+                    pytz.timezone(
+                        "Europe/London"
+                    )
+                ).isoformat()
+            )
 
             return True
 
@@ -2476,9 +1882,13 @@ def change_slot_status(
             slot["load_ref"] = ""
             slot["archive_filename"] = ""
 
-            slot[
-                "reopened_at"
-            ] = london_now_iso()
+            slot["reopened_at"] = (
+                datetime.now(
+                    pytz.timezone(
+                        "Europe/London"
+                    )
+                ).isoformat()
+            )
 
             return True
 
@@ -2497,9 +1907,7 @@ def show_planner():
         go_to("home")
         st.rerun()
 
-    st.title(
-        "📋 Campeys Load Planner"
-    )
+    st.title("📋 Campeys Load Planner")
 
     st.caption(
         "Collection requests come from the existing Campeys "
@@ -2511,29 +1919,17 @@ def show_planner():
     # WEEK CONTROL
     # --------------------------------------------------------
 
-    if (
-        st.session_state.planner_week
-        is None
-    ):
-        st.session_state.planner_week = (
-            monday_for(
-                london_now().date()
-            )
+    if st.session_state.planner_week is None:
+        st.session_state.planner_week = monday_for(
+            date.today()
         )
 
     current_monday = monday_for(
         st.session_state.planner_week
     )
 
-    previous_col, week_col, today_col, next_col = (
-        st.columns(
-            [
-                1.15,
-                2.2,
-                0.8,
-                1.15,
-            ]
-        )
+    previous_col, week_col, today_col, next_col = st.columns(
+        [1.15, 2.2, 0.8, 1.15]
     )
 
     with previous_col:
@@ -2545,9 +1941,7 @@ def show_planner():
                 current_monday
                 - timedelta(days=7)
             )
-
             st.session_state.planner_selected_slot_id = None
-
             st.rerun()
 
     with week_col:
@@ -2571,13 +1965,9 @@ def show_planner():
             use_container_width=True,
         ):
             st.session_state.planner_week = (
-                monday_for(
-                    london_now().date()
-                )
+                monday_for(date.today())
             )
-
             st.session_state.planner_selected_slot_id = None
-
             st.rerun()
 
     with next_col:
@@ -2589,9 +1979,7 @@ def show_planner():
                 current_monday
                 + timedelta(days=7)
             )
-
             st.session_state.planner_selected_slot_id = None
-
             st.rerun()
 
     current_monday = monday_for(
@@ -2615,10 +2003,7 @@ def show_planner():
 
         request_file = st.file_uploader(
             "Campey Transport Requests workbook",
-            type=[
-                "xlsx",
-                "xls",
-            ],
+            type=["xlsx", "xls"],
             key="planner_request_upload",
         )
 
@@ -2635,26 +2020,25 @@ def show_planner():
                         "No Campeys collection requests were "
                         "found in the workbook."
                     )
-
                 else:
+                    preview_df = pd.DataFrame(
+                        requests_found
+                    )
+
                     preview_df = (
-                        pd.DataFrame(
-                            requests_found
-                        )
+                        preview_df
                         .sort_values(
                             [
                                 "collection_date",
                                 "collection_time",
                             ]
                         )
-                        .reset_index(
-                            drop=True
-                        )
+                        .reset_index(drop=True)
                     )
 
                     st.success(
                         f"Found {len(requests_found)} "
-                        "collection request(s)."
+                        f"collection request(s)."
                     )
 
                     st.dataframe(
@@ -2701,20 +2085,22 @@ def show_planner():
                             st.success(
                                 f"Planner updated. "
                                 f"{added} new slot(s) added; "
-                                f"{existing} existing slot(s) kept."
+                                f"{existing} existing slot(s) "
+                                f"kept."
                             )
 
                             if sync_changed:
                                 st.info(
                                     "Archived loads were also "
-                                    "matched to pending collections."
+                                    "matched to pending "
+                                    "collections."
                                 )
 
                             st.rerun()
 
                         else:
                             st.error(
-                                "Could not save planner: "
+                                f"Could not save planner: "
                                 f"{message}"
                             )
 
@@ -2736,15 +2122,7 @@ def show_planner():
             "🔄 Refresh from GitHub",
             use_container_width=True,
         ):
-            # Explicit refresh clears all relevant caches.
-            get_github_file.clear()
-            list_saved_load_files.clear()
-            load_archive_index.clear()
-            load_archived_loads.clear()
-            load_planner_data.clear()
-
             st.session_state.planner_selected_slot_id = None
-
             st.rerun()
 
     planner_data = load_planner_data()
@@ -2802,11 +2180,6 @@ def show_planner():
         ) in week_date_keys
     ]
 
-    # Index once instead of repeatedly scanning week_slots.
-    slot_index = index_slots_by_datetime(
-        week_slots
-    )
-
     # Build all times in the week.
     times = sorted(
         {
@@ -2826,17 +2199,15 @@ def show_planner():
     # WEEKLY PLANNER GRID
     # --------------------------------------------------------
 
-    st.subheader(
-        "Weekly Planner"
-    )
+    st.subheader("Weekly Planner")
 
     if not times:
         st.info(
             "No collection requests have been imported "
             "for this week yet."
         )
-
     else:
+        # Header.
         header_cols = st.columns(
             [0.7] + [1] * 7
         )
@@ -2845,27 +2216,19 @@ def show_planner():
             "**Time**"
         )
 
-        # Precalculate day counts.
-        day_counts = defaultdict(int)
-
-        for slot in week_slots:
-            day_counts[
-                slot.get(
-                    "collection_date"
-                )
-            ] += 1
-
         for index, current_date in enumerate(
             week_dates,
             start=1,
         ):
-            day_key = (
-                current_date.isoformat()
-            )
+            day_key = current_date.isoformat()
 
-            count = day_counts[
-                day_key
-            ]
+            count = sum(
+                1
+                for slot in week_slots
+                if slot.get(
+                    "collection_date"
+                ) == day_key
+            )
 
             header_cols[index].markdown(
                 f"""
@@ -2885,6 +2248,7 @@ def show_planner():
             "🟥 Cancelled = C"
         )
 
+        # Each row is a collection time.
         for time_text in times:
             row_cols = st.columns(
                 [0.7] + [1] * 7
@@ -2902,13 +2266,16 @@ def show_planner():
                     current_date.isoformat()
                 )
 
-                matching_slots = slot_index.get(
-                    (
-                        date_key,
-                        time_text,
-                    ),
-                    [],
-                )
+                matching_slots = [
+                    slot
+                    for slot in week_slots
+                    if slot.get(
+                        "collection_date"
+                    ) == date_key
+                    and slot.get(
+                        "collection_time"
+                    ) == time_text
+                ]
 
                 cell = row_cols[
                     day_index
@@ -2959,7 +2326,6 @@ def show_planner():
                         st.session_state.planner_selected_slot_id = (
                             slot.get("id")
                         )
-
                         st.rerun()
 
         # ----------------------------------------------------
@@ -2986,11 +2352,9 @@ def show_planner():
         )
 
         if selected_slot:
-            selected_date = (
-                normalise_date_only(
-                    selected_slot.get(
-                        "collection_date"
-                    )
+            selected_date = normalise_date_only(
+                selected_slot.get(
+                    "collection_date"
                 )
             )
 
@@ -3026,9 +2390,7 @@ def show_planner():
                 "#### Selected Collection"
             )
 
-            with st.container(
-                border=True
-            ):
+            with st.container(border=True):
                 info_col1, info_col2 = st.columns(
                     [1, 1]
                 )
@@ -3045,7 +2407,7 @@ def show_planner():
 
                     if status == "assigned":
                         st.markdown(
-                            "**Load Ref:** "
+                            f"**Load Ref:** "
                             f"{selected_slot.get('load_ref', '')}"
                         )
 
@@ -3094,7 +2456,6 @@ def show_planner():
                             )
 
                         st.session_state.planner_selected_slot_id = None
-
                         st.rerun()
 
     # --------------------------------------------------------
@@ -3118,27 +2479,24 @@ def show_planner():
                 "No archived sender CSVs were found "
                 "for this week."
             )
-
         else:
-            # O(1) archive -> planner lookup.
-            slots_by_load_ref = (
-                index_slots_by_load_ref(
-                    planner_data.get(
-                        "slots",
-                        [],
-                    )
-                )
-            )
-
             archive_rows = []
 
             for load in current_week_archived:
-                assigned_slot = (
-                    slots_by_load_ref.get(
-                        load.get(
+                assigned_slot = next(
+                    (
+                        slot
+                        for slot in planner_data.get(
+                            "slots",
+                            [],
+                        )
+                        if slot.get(
+                            "load_ref"
+                        ) == load.get(
                             "load_ref"
                         )
-                    )
+                    ),
+                    None,
                 )
 
                 archive_rows.append(
@@ -3197,7 +2555,7 @@ def show_planner():
         "⬇️ Export Planner to Excel",
         data=export_bytes,
         file_name=(
-            "Campeys_Load_Planner_"
+            f"Campeys_Load_Planner_"
             f"{current_monday.strftime('%Y%m%d')}.xlsx"
         ),
         mime=(
@@ -3220,9 +2578,7 @@ def show_history():
         go_to("home")
         st.rerun()
 
-    st.title(
-        "📊 SKU History"
-    )
+    st.title("📊 SKU History")
 
     history = load_history()
 
@@ -3305,20 +2661,12 @@ def extract_historic_csv_data(
             encoding="utf-8-sig",
         )
 
-        df.columns = (
-            pd.Index(df.columns)
-            .map(str)
-            .str.strip()
-        )
+        df.columns = [
+            str(column).strip()
+            for column in df.columns
+        ]
 
-        required = {
-            "Item Code",
-            "Quantity",
-        }
-
-        if not required.issubset(
-            df.columns
-        ):
+        if "Item Code" not in df.columns:
             return []
 
         load_ref = ""
@@ -3336,84 +2684,58 @@ def extract_historic_csv_data(
 
         date_value = ""
 
-        for column in (
+        for column in [
             "Date",
             "Date Submitted",
-        ):
-            if column not in df.columns:
-                continue
-
-            values = (
-                df[column]
-                .dropna()
-                .astype(str)
-                .str.strip()
-            )
-
-            if not values.empty:
-                date_value = (
-                    normalise_history_date(
-                        values.iloc[0]
-                    )
-                    or ""
+        ]:
+            if column in df.columns:
+                values = (
+                    df[column]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
                 )
-                break
 
-        # Vectorised quantity conversion.
-        df["Quantity"] = pd.to_numeric(
-            df["Quantity"]
-            .astype(str)
-            .str.replace(
-                ",",
-                "",
-                regex=False,
-            ),
-            errors="coerce",
-        )
+                if not values.empty:
+                    date_value = (
+                        normalise_history_date(
+                            values.iloc[0]
+                        )
+                        or ""
+                    )
+                    break
 
-        df["Item Code"] = (
-            df["Item Code"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-        df = df.loc[
-            df["Item Code"].ne("")
-            & df["Quantity"].notna()
-        ]
-
-        if df.empty:
+        if "Quantity" not in df.columns:
             return []
 
+        records = []
+
         grouped = (
-            df.groupby(
-                "Item Code",
-                as_index=False,
-            )["Quantity"]
+            df.groupby("Item Code")["Quantity"]
             .sum()
         )
 
-        grouped["Date"] = date_value
-        grouped["Load Ref"] = load_ref
+        for item_code, quantity in grouped.items():
+            try:
+                quantity_value = float(
+                    str(quantity)
+                    .replace(",", "")
+                )
+            except Exception:
+                continue
 
-        grouped = grouped.rename(
-            columns={
-                "Item Code": "Item Code",
-                "Quantity": "Quantity",
-            }
-        )
+            records.append(
+                {
+                    "Date": date_value,
+                    "Load Ref": load_ref,
+                    "Item Code": str(
+                        item_code
+                    ).strip(),
+                    "Quantity": quantity_value,
+                }
+            )
 
-        return grouped[
-            [
-                "Date",
-                "Load Ref",
-                "Item Code",
-                "Quantity",
-            ]
-        ].to_dict(
-            "records"
-        )
+        return records
 
     except Exception:
         return []
@@ -3429,10 +2751,7 @@ def import_historic_csvs(
     )
 
     if incoming.empty:
-        return (
-            False,
-            "No records to import.",
-        )
+        return False, "No records to import."
 
     if history.empty:
         combined = incoming
@@ -3467,9 +2786,7 @@ def show_import():
         go_to("home")
         st.rerun()
 
-    st.title(
-        "📥 Historic CSV Import"
-    )
+    st.title("📥 Historic CSV Import")
 
     st.write(
         "Upload historic sender CSVs to rebuild or extend "
@@ -3488,10 +2805,12 @@ def show_import():
     imported_records = []
 
     for uploaded_file in uploaded_files:
+        records = extract_historic_csv_data(
+            uploaded_file
+        )
+
         imported_records.extend(
-            extract_historic_csv_data(
-                uploaded_file
-            )
+            records
         )
 
     if not imported_records:
@@ -3539,16 +2858,6 @@ def show_import():
 # CONTACTS
 # ============================================================
 
-@st.cache_data(
-    ttl=300,
-    show_spinner=False,
-)
-def load_contacts():
-    return get_github_file(
-        CONTACT_LIST_PATH
-    )
-
-
 def show_contacts():
     if st.button(
         "← Back to Home",
@@ -3557,11 +2866,11 @@ def show_contacts():
         go_to("home")
         st.rerun()
 
-    st.title(
-        "📇 Campeys Contacts"
-    )
+    st.title("📇 Campeys Contacts")
 
-    result = load_contacts()
+    result = get_github_file(
+        CONTACT_LIST_PATH
+    )
 
     if not result:
         st.info(
@@ -3608,11 +2917,16 @@ def show_home():
             st.rerun()
 
     with row1[2]:
-        st.link_button(
-            "🖥️ Open AutoStore",
-            AUTOSTORE_URL,
+        if st.button(
+            "🖥️ AutoStore",
+            key="open_autostore",
             use_container_width=True,
-        )
+        ):
+            st.link_button(
+                "Open AutoStore",
+                AUTOSTORE_URL,
+                use_container_width=True,
+            )
 
     row2 = st.columns(3)
 
