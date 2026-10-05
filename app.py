@@ -385,7 +385,7 @@ def send_email_with_smtp(
         )
 
         csv_bytes = csv_content.encode(
-            "utf-8-sig"
+            "utf-8"
         )
 
         attachment = MIMEApplication(
