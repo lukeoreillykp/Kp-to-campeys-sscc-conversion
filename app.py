@@ -66,9 +66,18 @@ LUKE_EMAIL = "luke.oreilly@kpsnacks.com"
 
 GRAYSON_EMAIL = "grayson.swan@kpsnacks.com"
 
+CARL_EMAIL = "carl.mansell@kpsnacks.com"
+
+MIKEY_EMAIL = "michael.bond@kpsnacks.com"
+
+MARK_EMAIL = "mark.maundrill@kpsnacks.com"
+
 EMAIL_CC = [
     LUKE_EMAIL,
     GRAYSON_EMAIL,
+    CARL_EMAIL
+    MIKEY_EMAIL
+    MARK_EMAIL
 ]
 
 # Gmail account used to send the emails
@@ -4788,7 +4797,7 @@ def show_history():
                         st.download_button(
                             label="Download CSV",
                             data=csv_content.encode(
-                                "utf-8-sig"
+                                "utf-8"
                             ),
                             file_name=file_name,
                             mime="text/csv",
@@ -4813,7 +4822,7 @@ def show_history():
         st.download_button(
             "Download Full Load History CSV",
             data=history_content.encode(
-                "utf-8-sig"
+                "utf-8"
             ),
             file_name=SKU_HISTORY_PATH,
             mime="text/csv",
@@ -5038,7 +5047,7 @@ def show_import():
             st.download_button(
                 "Download Updated Load History",
                 data=updated_history_csv.encode(
-                    "utf-8-sig"
+                    "utf-8"
                 ),
                 file_name=SKU_HISTORY_PATH,
                 mime="text/csv",
@@ -5553,6 +5562,25 @@ def show_sender():
                 key="send_to_grayson",
             )
 
+            send_to_carl = st.checkbox(
+                "Carl Mansell "
+                "(carl.mansell@kpsnacks.com)",
+                value=True,
+                key="send_to_carl",
+            )
+
+         send_to_mikey = st.checkbox(
+                "Mikey Bond "
+                "(michael.bond@kpsnacks.com)",
+                value=True,
+                key="send_to_mikey",
+            )
+         send_to_mark = st.checkbox(
+                "Mark Maundril "
+                "(mark.maundrill@kpsnacks.com)",
+                value=True,
+                key="send_to_mark",
+            )
         with col_email2:
 
             send_to_gmail = st.checkbox(
@@ -5582,7 +5610,24 @@ def show_sender():
             cc_recipients.append(
                 GRAYSON_EMAIL
             )
+            
+        if send_to_carl:
 
+            cc_recipients.append(
+                CARL_EMAIL
+            )
+
+        if send_to_mikey:
+
+            cc_recipients.append(
+                MIKEY_EMAIL
+            )
+            
+        if send_to_mark:
+
+            cc_recipients.append(
+                MARK_EMAIL
+            )
         if send_to_gmail:
 
             cc_recipients.append(
