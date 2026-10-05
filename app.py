@@ -5504,7 +5504,7 @@ def show_sender():
         st.download_button(
             "Download CSV",
             data=csv_text.encode(
-                "utf-8-sig"
+                "utf-8"
             ),
             file_name=filename,
             mime="text/csv",
