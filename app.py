@@ -5569,13 +5569,14 @@ def show_sender():
                 key="send_to_carl",
             )
 
-         send_to_mikey = st.checkbox(
+             send_to_mikey = st.checkbox(
                 "Mikey Bond "
                 "(michael.bond@kpsnacks.com)",
                 value=True,
                 key="send_to_mikey",
             )
-         send_to_mark = st.checkbox(
+            
+             send_to_mark = st.checkbox(
                 "Mark Maundril "
                 "(mark.maundrill@kpsnacks.com)",
                 value=True,
