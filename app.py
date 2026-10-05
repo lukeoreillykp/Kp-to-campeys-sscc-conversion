@@ -698,7 +698,7 @@ def get_github_file(
                 )
             )
             .decode(
-                "utf-8-sig"
+                "utf-8"
             )
         )
 
