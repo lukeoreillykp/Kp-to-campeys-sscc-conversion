@@ -75,9 +75,9 @@ MARK_EMAIL = "mark.maundrill@kpsnacks.com"
 EMAIL_CC = [
     LUKE_EMAIL,
     GRAYSON_EMAIL,
-    CARL_EMAIL
-    MIKEY_EMAIL
-    MARK_EMAIL
+    CARL_EMAIL,
+    MIKEY_EMAIL,
+    MARK_EMAIL,
 ]
 
 # Gmail account used to send the emails
