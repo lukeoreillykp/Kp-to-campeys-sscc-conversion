@@ -72,12 +72,15 @@ MIKEY_EMAIL = "michael.bond@kpsnacks.com"
 
 MARK_EMAIL = "mark.maundrill@kpsnacks.com"
 
+LEE_EMAIL = "lee.bennett@kpsnacks.com"
+
 EMAIL_CC = [
     LUKE_EMAIL,
     GRAYSON_EMAIL,
     CARL_EMAIL,
     MIKEY_EMAIL,
     MARK_EMAIL,
+    LEE_EMAIL,
 ]
 
 # Gmail account used to send the emails
@@ -5590,6 +5593,12 @@ def show_sender():
                 value=False,
                 key="send_to_gmail",
             )
+            send_to_lee = st.checkbox(
+                "Lee Bennett "
+                "(mark.maundrill@kpsnacks.com)",
+                value=False,
+                key="send_to_Lee",
+            )
 
         to_recipients = []
         cc_recipients = []
@@ -5623,11 +5632,15 @@ def show_sender():
             cc_recipients.append(
                 MIKEY_EMAIL
             )
-            
         if send_to_mark:
 
             cc_recipients.append(
                 MARK_EMAIL
+            )
+        if send_to_lee:
+
+            cc_recipients.append(
+                LEE_EMAIL
             )
         if send_to_gmail:
 
