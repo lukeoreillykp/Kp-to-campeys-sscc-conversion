@@ -5585,6 +5585,12 @@ def show_sender():
                 value=True,
                 key="send_to_mark",
             )
+             send_to_lee = st.checkbox(
+                "Lee Bennett "
+                "(mark.maundrill@kpsnacks.com)",
+                value=False,
+                key="send_to_Lee",
+            )
         with col_email2:
 
             send_to_gmail = st.checkbox(
@@ -5593,12 +5599,7 @@ def show_sender():
                 value=False,
                 key="send_to_gmail",
             )
-            send_to_lee = st.checkbox(
-                "Lee Bennett "
-                "(mark.maundrill@kpsnacks.com)",
-                value=False,
-                key="send_to_Lee",
-            )
+           
 
         to_recipients = []
         cc_recipients = []
